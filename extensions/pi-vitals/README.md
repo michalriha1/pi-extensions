@@ -107,6 +107,8 @@ Create `~/.pi/agent/powerline.json` to customize the footer:
 }
 ```
 
+Configuration is validated when the extension starts and when `/footer reload` is run. Invalid fields fall back to defaults while other valid fields remain active. A single warning identifies malformed JSON or invalid segment, option, color, or icon values; configuration is never re-read during footer redraws.
+
 ## Available Segments
 
 | Segment | Description |
@@ -134,7 +136,7 @@ The `path` segment adapts based on whether you're inside a git repo:
 
 - **Not in a git repo**: Shows the full current path
 - **In a git repo**: Shows `[repo_name]/relative/path` with the repo icon
-- **In a worktree**: Same format — uses the bare repo name, so `plexus/main` shows as `[plexus]` instead of redundantly showing `main main`
+- **In a worktree**: Same format — uses the common repository directory name, so `plexus/main` shows as `[plexus]` instead of redundantly showing `main main`
 
 ## Extension Status Passthrough
 
@@ -177,3 +179,13 @@ Or disable with:
 ```bash
 export POWERLINE_NERD_FONTS=0
 ```
+
+## Development
+
+```bash
+npm test
+npm run typecheck
+npm run benchmark
+```
+
+The benchmark reports cold session snapshot construction separately from 3,600 cache-hit renders for sessions with 0, 100, 1,000, and 10,000 entries. It checks operation-count invariants rather than timing thresholds, so timing output is informational.

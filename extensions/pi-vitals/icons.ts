@@ -72,10 +72,10 @@ export function hasNerdFonts(): boolean {
   return nerdTerms.some(t => term.includes(t));
 }
 
+export function mergeIcons(nerdFonts: boolean, customIcons: Partial<IconSet> = {}): IconSet {
+  return { ...(nerdFonts ? NERD_ICONS : ASCII_ICONS), ...customIcons };
+}
+
 export function getIcons(customIcons?: Partial<IconSet>): IconSet {
-  const baseIcons = hasNerdFonts() ? NERD_ICONS : ASCII_ICONS;
-  if (!customIcons || Object.keys(customIcons).length === 0) {
-    return baseIcons;
-  }
-  return { ...baseIcons, ...customIcons };
+  return mergeIcons(hasNerdFonts(), customIcons);
 }

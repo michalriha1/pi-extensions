@@ -1,4 +1,4 @@
-import type { Theme, ThemeColor } from "@mariozechner/pi-coding-agent";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { IconSet } from "./icons.js";
 
 // Theme color - either a pi theme color name or a custom hex color
@@ -79,24 +79,28 @@ export interface UsageStats {
   cost: number;
 }
 
+export type ThinkingLabels = Readonly<Record<string, string>>;
+
 // Context passed to segment render functions
 export interface SegmentContext {
   model: { id: string; name?: string; reasoning?: boolean; contextWindow?: number } | undefined;
   thinkingLevel: string;
   sessionId: string | undefined;
   usageStats: UsageStats;
-  contextPercent: number;
+  contextPercent: number | null;
   contextWindow: number;
   autoCompactEnabled: boolean;
   usingSubscription: boolean;
   sessionStartTime: number;
+  cwd: string;
   git: GitStatus;
-  extensionStatuses: ReadonlyMap<string, string>;
+  extensionStatusText: string;
   options: StatusLineSegmentOptions;
   width: number;
   theme: Theme;
   colors: ColorScheme;
   icons: IconSet;
+  thinkingLabels: ThinkingLabels;
 }
 
 // Rendered segment output

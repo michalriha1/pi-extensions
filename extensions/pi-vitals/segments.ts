@@ -1,18 +1,22 @@
 import { basename, relative } from "node:path";
-import type { RenderedSegment, SegmentContext } from "./types.js";
+import type { RenderedSegment, SegmentContext, SemanticColor, StatusLineSegmentId } from "./types.js";
 import { fg, rainbow, applyColor } from "./theme.js";
-import { hasNerdFonts } from "./icons.js";
 
 // Separator between model name and thinking level
 const SEP_DOT = " · ";
 
 // Helper to apply semantic color from context
-function color(ctx: SegmentContext, semantic: string, text: string): string {
-  return fg(ctx.theme, semantic as any, text, ctx.colors);
+function color(ctx: SegmentContext, semantic: SemanticColor, text: string): string {
+  return fg(ctx.theme, semantic, text, ctx.colors);
 }
 
 function withIcon(icon: string, text: string): string {
   return icon ? `${icon} ${text}` : text;
+}
+
+/** Remove terminal controls from filesystem and Git-derived display values. */
+export function sanitizeDisplayText(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "�");
 }
 
 function formatTokens(n: number): string {
@@ -21,25 +25,6 @@ function formatTokens(n: number): string {
   if (n < 1000000) return `${Math.round(n / 1000)}k`;
   if (n < 10000000) return `${(n / 1000000).toFixed(1)}M`;
   return `${Math.round(n / 1000000)}M`;
-}
-
-// Thinking level display text
-function getThinkingText(level: string): string | undefined {
-  const isNerd = hasNerdFonts();
-  const THINKING_TEXT: Record<string, string> = isNerd ? {
-    minimal: "\u{F0E7} min",
-    low: "\u{F10C} low",
-    medium: "\u{F192} med",
-    high: "\u{F111} high",
-    xhigh: "\u{F06D} xhi",
-  } : {
-    minimal: "[min]",
-    low: "[low]",
-    medium: "[med]",
-    high: "[high]",
-    xhigh: "[xhi]",
-  };
-  return THINKING_TEXT[level];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -72,7 +57,7 @@ const modelSegment = {
     if (opts.showThinkingLevel !== false && ctx.model?.reasoning) {
       const level = ctx.thinkingLevel || "off";
       if (level !== "off") {
-        const thinkingText = getThinkingText(level);
+        const thinkingText = ctx.thinkingLabels[level];
         if (thinkingText) {
           content += `${SEP_DOT}${thinkingText}`;
         }
@@ -89,7 +74,7 @@ const pathSegment = {
     const opts = ctx.options.path ?? {};
     const mode = opts.mode ?? "basename";
 
-    let pwd = process.cwd();
+    let pwd = ctx.cwd;
     const home = process.env.HOME || process.env.USERPROFILE;
     const gitWorktreeDir = ctx.git.worktreeDir;
     const gitRepoName = ctx.git.repoName;
@@ -124,7 +109,7 @@ const pathSegment = {
     }
 
     const icon = useRepoIcon ? ctx.icons.repo : ctx.icons.folder;
-    const content = withIcon(icon, pwd);
+    const content = withIcon(icon, sanitizeDisplayText(pwd));
     return { content: color(ctx, "path", content), visible: true };
   },
 };
@@ -145,7 +130,7 @@ const gitSegment = {
 
     let content = "";
     if (showBranch && branch) {
-      content = color(ctx, branchColor, withIcon(ctx.icons.branch, branch));
+      content = color(ctx, branchColor, withIcon(ctx.icons.branch, sanitizeDisplayText(branch)));
     }
 
     const indicators: string[] = [];
@@ -261,12 +246,12 @@ const contextPctSegment = {
 
     const showAuto = opts.showAutoIcon !== false && ctx.icons.auto;
     const autoIcon = ctx.autoCompactEnabled && showAuto ? ` ${ctx.icons.auto}` : "";
-    const text = `${pct.toFixed(1)}%/${formatTokens(window)}${autoIcon}`;
+    const text = `${pct === null ? "?" : pct.toFixed(1)}%/${formatTokens(window)}${autoIcon}`;
 
     let content: string;
-    if (pct > 90) {
+    if (pct !== null && pct > 90) {
       content = withIcon(ctx.icons.contextPct, color(ctx, "contextError", text));
-    } else if (pct > 70) {
+    } else if (pct !== null && pct > 70) {
       content = withIcon(ctx.icons.contextPct, color(ctx, "contextWarn", text));
     } else {
       content = withIcon(ctx.icons.contextPct, color(ctx, "context", text));
@@ -311,15 +296,7 @@ const cacheWriteSegment = {
 const extStatusSegment = {
   id: "ext_status" as const,
   render(ctx: SegmentContext): RenderedSegment {
-    const statuses = ctx.extensionStatuses;
-    if (!statuses || statuses.size === 0) {
-      return { content: "", visible: false };
-    }
-    // Render all extension statuses joined with spaces
-    const parts = Array.from(statuses.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, text]) => text);
-    const content = parts.join(" ");
+    const content = ctx.extensionStatusText;
     return { content, visible: content.length > 0 };
   },
 };

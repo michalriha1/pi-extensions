@@ -1,225 +1,127 @@
-import type { ExtensionAPI, ReadonlyFooterDataProvider, Theme, AssistantMessage } from "@mariozechner/pi-coding-agent";
-import { visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 
-import type { SegmentContext, StatusLineSegmentId } from "./types.js";
-import { renderSegment } from "./segments.js";
-import { getGitStatus, invalidateGitStatus, invalidateGitBranch, invalidateGitRoot, setOnFetchComplete } from "./git-status.js";
-import { getEffectiveConfig, clearUserConfigCache, loadUserConfig } from "./config.js";
-import { getIcons } from "./icons.js";
-import { getDefaultColors } from "./theme.js";
+import { createFooterRenderCache } from "./footer-render-cache.js";
+import {
+  disposeGitStatus,
+  getGitStatus,
+  invalidateGitStatus,
+  invalidateGitBranch,
+  invalidateGitRoot,
+  setOnFetchComplete,
+} from "./git-status.js";
+import {
+  createPresentationSnapshotController,
+  type PresentationSnapshot,
+} from "./presentation.js";
+import { createSessionSnapshotController } from "./session-snapshot.js";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Status Line Builder
-// ═══════════════════════════════════════════════════════════════════════════
+export default function powerlineFooter(pi: ExtensionAPI): void {
+  const presentationSnapshots = createPresentationSnapshotController();
+  let tuiRef: TUI | null = null;
+  const renderTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  const sessionSnapshots = createSessionSnapshotController(pi, () => tuiRef?.requestRender());
 
-/** Render a single segment and return its content with width */
-function renderSegmentWithWidth(
-  segId: StatusLineSegmentId,
-  ctx: SegmentContext
-): { content: string; width: number; visible: boolean } {
-  const rendered = renderSegment(segId, ctx);
-  if (!rendered.visible || !rendered.content) {
-    return { content: "", width: 0, visible: false };
-  }
-  return { content: rendered.content, width: visibleWidth(rendered.content), visible: true };
-}
+  const clearRenderTimers = (): void => {
+    for (const timer of renderTimers.values()) clearTimeout(timer);
+    renderTimers.clear();
+  };
+  const requestDelayedRender = (delayMs: number): void => {
+    if (renderTimers.has(delayMs)) return;
+    const timer = setTimeout(() => {
+      renderTimers.delete(delayMs);
+      tuiRef?.requestRender();
+    }, delayMs);
+    renderTimers.set(delayMs, timer);
+  };
 
-/**
- * Build footer content from left and right segments.
- * Left segments are left-aligned, right segments are right-aligned.
- */
-function buildFooterContent(
-  ctx: SegmentContext,
-  leftSegments: StatusLineSegmentId[],
-  rightSegments: StatusLineSegmentId[],
-  availableWidth: number
-): string {
-  const maxContentWidth = Math.max(0, availableWidth - 2);
-
-  // Render left segments
-  const leftParts: string[] = [];
-  let leftWidth = 0;
-  for (const segId of leftSegments) {
-    const { content, width, visible } = renderSegmentWithWidth(segId, ctx);
-    if (visible) {
-      leftParts.push(content);
-      leftWidth += width + 1; // +1 for space between
-    }
-  }
-  if (leftParts.length > 0) {
-    leftWidth -= 1; // Remove trailing space
-  }
-
-  // Render right segments
-  const rightParts: string[] = [];
-  let rightWidth = 0;
-  for (const segId of rightSegments) {
-    const { content, width, visible } = renderSegmentWithWidth(segId, ctx);
-    if (visible) {
-      rightParts.push(content);
-      rightWidth += width + 1; // +1 for space between
-    }
-  }
-  if (rightParts.length > 0) {
-    rightWidth -= 1; // Remove trailing space
-  }
-
-  let leftStr = leftParts.join(" ");
-  let rightStr = rightParts.join(" ");
-
-  // Handle case with no right segments
-  if (rightParts.length === 0) {
-    const finalLeft = truncateToWidth(leftStr, maxContentWidth);
-    return " " + finalLeft + " ".repeat(Math.max(0, maxContentWidth - visibleWidth(finalLeft))) + " ";
-  }
-
-  // If right side alone is too big, just show right side
-  if (rightWidth >= maxContentWidth) {
-    return " " + truncateToWidth(rightStr, maxContentWidth) + " ";
-  }
-
-  // Ensure at least 1 space between left and right
-  const maxLeftWidth = maxContentWidth - rightWidth - 1;
-  const finalLeft = truncateToWidth(leftStr, Math.max(0, maxLeftWidth));
-  const finalLeftWidth = visibleWidth(finalLeft);
-
-  const padding = maxContentWidth - finalLeftWidth - rightWidth;
-
-  const result = " " + finalLeft + " ".repeat(padding) + rightStr + " ";
-  return truncateToWidth(result, availableWidth);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Extension
-// ═══════════════════════════════════════════════════════════════════════════
-
-export default function powerlineFooter(pi: ExtensionAPI) {
-  let sessionStartTime = Date.now();
-  let currentCtx: any = null;
-  let footerDataRef: ReadonlyFooterDataProvider | null = null;
-  let getThinkingLevelFn: (() => string) | null = null;
-  let tuiRef: any = null;
-
-  // Track session start
-  pi.on("session_start", async (_event, ctx) => {
-    sessionStartTime = Date.now();
-    currentCtx = ctx;
-
-    if (typeof ctx.getThinkingLevel === 'function') {
-      getThinkingLevelFn = () => ctx.getThinkingLevel();
-    }
-
+  pi.on("session_start", (_event, ctx) => {
+    sessionSnapshots.start(ctx);
     if (ctx.hasUI) {
-      setupFooter(ctx);
+      const presentation = presentationSnapshots.getSnapshot();
+      setupFooter(ctx, presentation);
+      notifyConfigDiagnostics(ctx, presentation);
     }
   });
 
-  // Clean up state on session shutdown to avoid stale references
-  pi.on("session_shutdown", async (_event, _ctx) => {
-    currentCtx = null;
-    footerDataRef = null;
+  pi.on("session_shutdown", () => {
+    clearRenderTimers();
     tuiRef = null;
-    getThinkingLevelFn = null;
-    setOnFetchComplete(null);
+    sessionSnapshots.dispose();
+    disposeGitStatus();
   });
 
-  // Invalidate git status at the end of every assistant message,
-  // since bash commands or other tools may have changed files on disk
-  pi.on("message_end", async (_event, _ctx) => {
+  pi.on("message_end", (event, ctx) => {
+    if (event.message.role === "assistant") {
+      sessionSnapshots.completeAssistant(event.message, ctx);
+    }
     invalidateGitStatus();
   });
 
-  // Also invalidate when the agent finishes (covers edge cases)
-  pi.on("agent_end", async (_event, _ctx) => {
-    invalidateGitStatus();
+  pi.on("session_compact", (_event, ctx) => sessionSnapshots.rebuild(ctx));
+  pi.on("session_tree", (_event, ctx) => sessionSnapshots.rebuild(ctx));
+  pi.on("model_select", (event, ctx) => sessionSnapshots.selectModel(event.model, ctx));
+  pi.on("thinking_level_select", (event, ctx) => {
+    sessionSnapshots.selectThinkingLevel(event.level, ctx);
   });
 
-  // Invalidate git status on file changes
-  pi.on("tool_result", async (event, _ctx) => {
-    if (event.toolName === "write" || event.toolName === "edit") {
-      invalidateGitStatus();
-    }
-    if (event.toolName === "bash" && event.input?.command) {
-      const cmd = String(event.input.command);
-      // Directory changes can move us into/out of a git repo
-      if (/\b(cd|pushd|popd)\b/.test(cmd)) {
-        invalidateGitRoot();
-        invalidateGitBranch();
-        invalidateGitStatus();
-      }
-      // Check for git commands that might change branch
-      const gitBranchPatterns = [
-        /\bgit\s+(checkout|switch|branch\s+-[dDmM]|merge|rebase|pull|reset|worktree)/,
-        /\bgit\s+stash\s+(pop|apply)/,
-      ];
-      if (gitBranchPatterns.some(p => p.test(cmd))) {
-        invalidateGitStatus();
-        invalidateGitBranch();
-        invalidateGitRoot();
-        setTimeout(() => {
-          if (tuiRef && currentCtx) tuiRef.requestRender();
-        }, 100);
-      }
+  pi.on("agent_end", () => invalidateGitStatus());
+
+  const invalidateForDirectoryChange = (): void => {
+    invalidateGitRoot();
+  };
+  const isGitBranchCommand = (command: string): boolean => [
+    /\bgit\s+(checkout|switch|branch\s+-[dDmM]|merge|rebase|pull|reset|worktree)/,
+    /\bgit\s+stash\s+(pop|apply)/,
+  ].some((pattern) => pattern.test(command));
+
+  pi.on("tool_result", (event) => {
+    if (event.toolName === "write" || event.toolName === "edit") invalidateGitStatus();
+    const command = event.input.command;
+    if (event.toolName !== "bash" || typeof command !== "string") return;
+    if (/\b(cd|pushd|popd)\b/.test(command)) invalidateForDirectoryChange();
+    if (isGitBranchCommand(command)) {
+      invalidateForDirectoryChange();
+      requestDelayedRender(100);
     }
   });
 
-  // Also catch user escape commands (! prefix)
-  pi.on("user_bash", async (event, _ctx) => {
-    const cmd = event.command;
-    // Directory changes can move us into/out of a git repo
-    if (/\b(cd|pushd|popd)\b/.test(cmd)) {
-      invalidateGitRoot();
-      invalidateGitBranch();
-      invalidateGitStatus();
-      const safeRender = () => {
-        if (tuiRef && currentCtx) tuiRef.requestRender();
-      };
-      setTimeout(safeRender, 100);
+  pi.on("user_bash", (event) => {
+    if (/\b(cd|pushd|popd)\b/.test(event.command)) {
+      invalidateForDirectoryChange();
+      requestDelayedRender(100);
       return;
     }
-    const gitBranchPatterns = [
-      /\bgit\s+(checkout|switch|branch\s+-[dDmM]|merge|rebase|pull|reset|worktree)/,
-      /\bgit\s+stash\s+(pop|apply)/,
-    ];
-    if (gitBranchPatterns.some(p => p.test(event.command))) {
-      invalidateGitStatus();
-      invalidateGitBranch();
-      invalidateGitRoot();
-      const safeRender = () => {
-        if (tuiRef && currentCtx) tuiRef.requestRender();
-      };
-      setTimeout(safeRender, 100);
-      setTimeout(safeRender, 300);
-      setTimeout(safeRender, 500);
+    if (isGitBranchCommand(event.command)) {
+      invalidateForDirectoryChange();
+      requestDelayedRender(100);
+      requestDelayedRender(300);
+      requestDelayedRender(500);
     }
   });
 
-  // Command to reload config
   pi.registerCommand("footer", {
     description: "Configure footer extension (reload, debug)",
     handler: async (args, ctx) => {
-      currentCtx = ctx;
-
       if (!args || args.trim().toLowerCase() === "reload") {
-        clearUserConfigCache();
-        if (ctx.hasUI) {
-          setupFooter(ctx);
-        }
-        const userConfig = loadUserConfig();
-        if (userConfig) {
-          ctx.ui.notify(`Footer config reloaded`, "info");
-        } else {
-          ctx.ui.notify(`No config file found at ~/.pi/agent/powerline.json`, "warning");
+        const presentation = presentationSnapshots.reload();
+        if (ctx.hasUI) setupFooter(ctx, presentation);
+        if (!notifyConfigDiagnostics(ctx, presentation)) {
+          if (presentation.hasUserConfig) {
+            ctx.ui.notify("Footer config reloaded", "info");
+          } else {
+            ctx.ui.notify("No config file found at ~/.pi/agent/powerline.json", "warning");
+          }
         }
         return;
       }
 
       if (args.trim().toLowerCase() === "debug") {
-        const cfg = getEffectiveConfig();
+        const presentation = presentationSnapshots.getSnapshot();
         const lines = [
-          `Left: ${cfg.leftSegments.join(", ")}`,
-          `Right: ${cfg.rightSegments.join(", ")}`,
-          `Custom icons: ${Object.keys(cfg.icons).join(", ") || "none"}`,
+          `Left: ${presentation.leftSegments.join(", ")}`,
+          `Right: ${presentation.rightSegments.join(", ")}`,
+          `Custom icons: ${presentation.customIconNames.join(", ") || "none"}`,
         ];
         ctx.ui.notify(lines.join(" | "), "info");
         return;
@@ -229,107 +131,49 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     },
   });
 
-  function buildSegmentContext(ctx: any, width: number, theme: Theme): SegmentContext {
-    const effectiveConfig = getEffectiveConfig();
-    const colors = effectiveConfig.colors ?? getDefaultColors();
-
-    // Build usage stats from session
-    let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
-    let lastAssistant: AssistantMessage | undefined;
-    let thinkingLevelFromSession = "off";
-
-    const sessionEvents = ctx.sessionManager?.getBranch?.() ?? [];
-    for (const e of sessionEvents) {
-      if (e.type === "thinking_level_change" && e.thinkingLevel) {
-        thinkingLevelFromSession = e.thinkingLevel;
-      }
-      if (e.type === "message" && e.message.role === "assistant") {
-        const m = e.message as AssistantMessage;
-        if (m.stopReason === "error" || m.stopReason === "aborted") {
-          continue;
-        }
-        input += m.usage.input;
-        output += m.usage.output;
-        cacheRead += m.usage.cacheRead;
-        cacheWrite += m.usage.cacheWrite;
-        cost += m.usage.cost.total;
-        lastAssistant = m;
-      }
-    }
-
-    // Calculate context percentage
-    const contextTokens = lastAssistant
-      ? lastAssistant.usage.input + lastAssistant.usage.output +
-        lastAssistant.usage.cacheRead + lastAssistant.usage.cacheWrite
-      : 0;
-    const contextWindow = ctx.model?.contextWindow || 0;
-    const contextPercent = contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
-
-    // Get git status (cached)
-    const gitBranch = footerDataRef?.getGitBranch() ?? null;
-    const gitStatus = getGitStatus(gitBranch);
-
-    // Check if using OAuth subscription
-    const usingSubscription = ctx.model
-      ? ctx.modelRegistry?.isUsingOAuth?.(ctx.model) ?? false
-      : false;
-
-    return {
-      model: ctx.model,
-      thinkingLevel: thinkingLevelFromSession || getThinkingLevelFn?.() || "off",
-      sessionId: ctx.sessionManager?.getSessionId?.(),
-      usageStats: { input, output, cacheRead, cacheWrite, cost },
-      contextPercent,
-      contextWindow,
-      autoCompactEnabled: ctx.settingsManager?.getCompactionSettings?.()?.enabled ?? true,
-      usingSubscription,
-      sessionStartTime,
-      git: gitStatus,
-      extensionStatuses: footerDataRef?.getExtensionStatuses() ?? new Map(),
-      options: effectiveConfig.segmentOptions ?? {},
-      width,
-      theme,
-      colors,
-      icons: getIcons(effectiveConfig.icons),
-    };
+  function notifyConfigDiagnostics(ctx: ExtensionContext, presentation: PresentationSnapshot): boolean {
+    if (presentation.configDiagnostics.length === 0) return false;
+    ctx.ui.notify(
+      `Footer config has invalid values; valid settings were kept and defaults used for invalid settings: ${presentation.configDiagnostics.join("; ")}`,
+      "warning",
+    );
+    return true;
   }
 
-  function setupFooter(ctx: any) {
-    ctx.ui.setFooter((tui: any, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
-      footerDataRef = footerData;
+  function setupFooter(ctx: ExtensionContext, presentation: PresentationSnapshot): void {
+    ctx.ui.setFooter((tui, theme, footerData) => {
       tuiRef = tui;
-
-      // Register callback so async git fetches trigger a re-render.
-      // Must be set INSIDE the factory, after setFooter has disposed
-      // the old footer. If set before, the old dispose wipes out the callback.
-      setOnFetchComplete(() => {
-        if (tuiRef) tuiRef.requestRender();
+      const renderCache = createFooterRenderCache();
+      setOnFetchComplete(() => tui.requestRender());
+      const unsubscribeBranch = footerData.onBranchChange(() => {
+        invalidateGitBranch();
+        tui.requestRender();
       });
-
-      // Subscribe to branch changes for re-render
-      const unsub = footerData.onBranchChange(() => tui.requestRender());
 
       return {
         dispose: () => {
-          unsub();
+          unsubscribeBranch();
+          clearRenderTimers();
+          setOnFetchComplete(null);
+          renderCache.dispose();
+          disposeGitStatus();
+          if (tuiRef === tui) tuiRef = null;
         },
-        invalidate() {},
+        invalidate() {
+          renderCache.invalidateTheme();
+        },
         render(width: number): string[] {
-          if (!currentCtx || !currentCtx.sessionManager?.getSessionId) {
-            return [];
-          }
-
-          const effectiveConfig = getEffectiveConfig();
-          const segmentCtx = buildSegmentContext(currentCtx, width, theme);
-
-          const content = buildFooterContent(
-            segmentCtx,
-            effectiveConfig.leftSegments,
-            effectiveConfig.rightSegments,
-            width
-          );
-
-          return [content];
+          const snapshot = sessionSnapshots.getSnapshot();
+          if (!snapshot) return [];
+          return renderCache.render({
+            width,
+            cwd: process.cwd(),
+            theme,
+            presentation,
+            session: snapshot,
+            git: getGitStatus(footerData.getGitBranch()),
+            extensionStatuses: footerData.getExtensionStatuses(),
+          });
         },
       };
     });
