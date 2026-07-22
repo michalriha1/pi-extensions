@@ -10,22 +10,22 @@ function getActiveTheme(): Theme | undefined {
 
 export default function toolCallGroupingExtension(pi: ExtensionAPI): void {
 	let currentTheme: Theme | undefined;
+	let patch: ReturnType<typeof installToolCallGroupingPatch> | undefined;
 	let cancelActiveSelection: (() => void) | undefined;
-	const patch = installToolCallGroupingPatch({ getTheme: () => currentTheme ?? getActiveTheme() });
 
 	const cancelSelection = () => {
 		cancelActiveSelection?.();
 		cancelActiveSelection = undefined;
-		patch.cancelSelection();
+		patch?.cancelSelection();
 	};
 
 	pi.registerShortcut("ctrl+shift+l", {
 		description: "Expand a collapsed tool call",
 		handler: async (ctx) => {
 			if (ctx.mode !== "tui" || cancelActiveSelection) return;
-			const labels = patch.beginSelection();
+			const labels = patch?.beginSelection() ?? [];
 			if (labels.length === 0) {
-				patch.cancelSelection();
+				patch?.cancelSelection();
 				ctx.ui.notify("No collapsed tool calls", "info");
 				return;
 			}
@@ -68,27 +68,31 @@ export default function toolCallGroupingExtension(pi: ExtensionAPI): void {
 						},
 					};
 				});
-				if (selected) patch.expandSelection(selected);
+				if (selected) patch?.expandSelection(selected);
 			} finally {
 				active = false;
 				cancelActiveSelection = undefined;
-				patch.cancelSelection();
+				patch?.cancelSelection();
 			}
 		},
 	});
 
 	pi.on("session_start", (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
 		cancelSelection();
 		currentTheme = ctx.ui.theme;
+		patch = installToolCallGroupingPatch({ getTheme: () => currentTheme ?? getActiveTheme() });
 		patch.reset();
-		if (ctx.mode === "tui") ctx.ui.setToolsExpanded(false);
+		ctx.ui.setToolsExpanded(false);
 		if (!patch.installed && patch.reason) ctx.ui.notify(`Tool call grouping disabled: ${patch.reason}`, "warning");
 	});
 
 	pi.on("session_shutdown", () => {
+		if (!patch) return;
 		cancelSelection();
 		currentTheme = undefined;
 		patch.restore();
+		patch = undefined;
 	});
 }
 

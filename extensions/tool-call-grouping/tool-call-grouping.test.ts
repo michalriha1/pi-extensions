@@ -1399,21 +1399,27 @@ describe("runtime patch", () => {
 		expect(tools[3]?.render(120)).toEqual(["", "• Exploring", "  └ Read fourth.ts"]);
 	});
 
-	test("does not discover transcript rows created before the patch is installed during parent render", () => {
+	test("adopts transcript rows created before patch installation once during parent render", () => {
 		const originalContainerRender = Container.prototype.render;
 		const parent = new Container();
 		const leader = component("read", "replay-read", { path: "replay.ts" });
 		const follower = component("ls", "replay-ls", { path: "src" });
 		parent.addChild(leader);
 		parent.addChild(follower);
-		install();
+		let rebuilds = 0;
+		install(() => {
+			rebuilds += 1;
+		});
 
-		expect(Container.prototype.render).toBe(originalContainerRender);
+		expect(Container.prototype.render).not.toBe(originalContainerRender);
 		expect(leader.render(120).length).toBeGreaterThan(0);
 		expect(follower.render(120).length).toBeGreaterThan(0);
 		parent.render(120);
-		expect(leader.render(120).length).toBeGreaterThan(0);
-		expect(follower.render(120).length).toBeGreaterThan(0);
+		expect(leader.render(120)).toContain("  └ List src");
+		expect(follower.render(120)).toEqual([]);
+		expect(rebuilds).toBe(1);
+		parent.render(120);
+		expect(rebuilds).toBe(1);
 	});
 
 	test("replaces cached ANSI rows when the active theme identity changes", () => {
@@ -1532,7 +1538,7 @@ describe("runtime patch", () => {
 		expect(ToolExecutionComponent.prototype.render).toBe(wrappedRender);
 		expect(AssistantMessageComponent.prototype.render).toBe(originalAssistantRender);
 		expect(AssistantMessageComponent.prototype.updateContent).not.toBe(originalAssistantUpdateContent);
-		expect(Container.prototype.render).toBe(originalContainerRender);
+		expect(Container.prototype.render).not.toBe(originalContainerRender);
 		expect(Container.prototype.addChild).not.toBe(originalAddChild);
 		expect(Container.prototype.removeChild).not.toBe(originalRemoveChild);
 		expect(Container.prototype.clear).not.toBe(originalClear);
@@ -1571,7 +1577,7 @@ describe("runtime patch", () => {
 		expect(Container.prototype.clear).toBe(originalClear);
 	});
 
-	test("uses the initialized TUI theme before session_start after extension reload", async () => {
+	test("adopts existing rows with the initialized TUI theme after extension reload", async () => {
 		type Handler = (event: unknown, ctx: ExtensionContext) => void | Promise<void>;
 		const loadExtension = () => {
 			const handlers = new Map<string, Handler>();
@@ -1608,6 +1614,9 @@ describe("runtime patch", () => {
 			commandParent.addChild(command);
 			command.updateResult({ content: [{ type: "text", text: "failed" }], isError: true }, false);
 
+			await reloadedHandlers.get("session_start")?.({ type: "session_start", reason: "reload" }, ctx);
+			explorationParent.render(120);
+			commandParent.render(120);
 			const successHeader = read.render(120)[1] ?? "";
 			const errorHeader = command.render(120)[1] ?? "";
 			expect(successHeader).toContain("Explored");
@@ -1670,6 +1679,60 @@ describe("runtime patch", () => {
 		}
 		expect(ToolExecutionComponent.prototype.render).toBe(originalRender);
 		expect(AssistantMessageComponent.prototype.render).toBe(originalAssistantRender);
+	});
+
+	test("ignores non-TUI subagent lifecycle events while the main TUI owns the patch", async () => {
+		type Handler = (event: unknown, ctx: ExtensionContext) => void | Promise<void>;
+		const originalRender = ToolExecutionComponent.prototype.render;
+		const loadExtension = () => {
+			const handlers = new Map<string, Handler>();
+			toolCallGroupingExtension({
+				on(event: string, handler: Handler) {
+					handlers.set(event, handler);
+				},
+				registerShortcut() {},
+			} as unknown as ExtensionAPI);
+			return handlers;
+		};
+		const mainHandlers = loadExtension();
+		const subagentHandlers = loadExtension();
+		const mainContext = {
+			mode: "tui",
+			ui: { theme: undefined, setToolsExpanded() {}, notify() {} },
+		} as unknown as ExtensionContext;
+		const subagentContext = { mode: "print", ui: {} } as unknown as ExtensionContext;
+
+		try {
+			await mainHandlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mainContext);
+			const wrappedRender = ToolExecutionComponent.prototype.render;
+			expect(wrappedRender).not.toBe(originalRender);
+			const parent = new Container();
+			const leader = component("read", "main-read", { path: "main.ts" });
+			const follower = component("ls", "main-ls", { path: "src" });
+			parent.addChild(leader);
+			parent.addChild(follower);
+			expect(leader.render(120).join("\n")).toContain("List src");
+			expect(follower.render(120)).toEqual([]);
+
+			await subagentHandlers.get("session_start")?.(
+				{ type: "session_start", reason: "startup" },
+				subagentContext,
+			);
+			expect(leader.render(120).join("\n")).toContain("List src");
+			expect(follower.render(120)).toEqual([]);
+			await subagentHandlers.get("session_shutdown")?.(
+				{ type: "session_shutdown", reason: "quit" },
+				subagentContext,
+			);
+			expect(ToolExecutionComponent.prototype.render).toBe(wrappedRender);
+			expect(leader.render(120).join("\n")).toContain("List src");
+			expect(follower.render(120)).toEqual([]);
+		} finally {
+			await mainHandlers.get("session_shutdown")?.(
+				{ type: "session_shutdown", reason: "quit" },
+				mainContext,
+			);
+		}
 	});
 
 	test("uses ctrl+shift+l to capture a fixed-width label and cleans up on selection", async () => {

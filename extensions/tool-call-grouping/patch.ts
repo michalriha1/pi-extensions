@@ -103,6 +103,7 @@ type UpdateArgsMethod = (this: object, args: unknown) => void;
 type UpdateResultMethod = (this: object, result: RuntimeToolResult, isPartial?: boolean) => void;
 type SetExpandedMethod = (this: object, expanded: boolean) => void;
 type UpdateAssistantContentMethod = (this: object, message: AssistantMessage) => void;
+type ContainerRenderMethod = (this: Container, width: number) => string[];
 type AddChildMethod = (this: Container, component: object) => void;
 type RemoveChildMethod = (this: Container, component: object) => void;
 type ClearMethod = (this: Container) => void;
@@ -248,6 +249,7 @@ class GroupingRuntime {
 	private componentRowsCache = new WeakMap<object, Map<Theme | undefined, Map<number, string[]>>>();
 	private selectionLabels = new Map<object, string>();
 	private assistantContentStates = new Map<object, AssistantContentState>();
+	private adoptedParents = new WeakSet<object>();
 	private readonly updateAssistantContent: UpdateAssistantContentMethod;
 	private readonly getTheme: () => Theme | undefined;
 	private readonly onParentRebuild: ((parent: object) => void) | undefined;
@@ -280,6 +282,7 @@ class GroupingRuntime {
 		this.normalizedOutputCache = new WeakMap();
 		this.groupRowsCache = new WeakMap();
 		this.componentRowsCache = new WeakMap();
+		this.adoptedParents = new WeakSet();
 		this.themeInitialized = false;
 		this.activeTheme = undefined;
 		this.activeThemeGeneration = undefined;
@@ -316,6 +319,32 @@ class GroupingRuntime {
 		if (typeof setExpanded !== "function") return false;
 		setExpanded.call(target, true);
 		return true;
+	}
+
+	adopt(parent: object, components: object[], assistantClass: typeof AssistantMessageComponent): void {
+		if (this.adoptedParents.has(parent)) return;
+		this.adoptedParents.add(parent);
+		const state = this.parentStates.get(parent) ?? { components: [] };
+		if (
+			state.components.length === components.length &&
+			state.components.every((component, index) => component === components[index])
+		) {
+			return;
+		}
+		for (const component of state.components) {
+			if (components.includes(component)) continue;
+			this.restoreAssistantContent(component);
+			this.invalidateRows(component);
+			this.memberships.delete(component);
+			if (this.componentParents.get(component) === parent) this.componentParents.delete(component);
+		}
+		state.components = [...components];
+		this.parentStates.set(parent, state);
+		for (const component of components) {
+			if (component instanceof assistantClass) this.observeAssistantContent(component);
+			this.componentParents.set(component, parent);
+		}
+		this.rebuildParent(parent, state);
 	}
 
 	observe(parent: object, component: object, assistant: boolean): void {
@@ -854,6 +883,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	const originalUpdateResult = toolPrototype.updateResult;
 	const originalSetExpanded = toolPrototype.setExpanded;
 	const originalUpdateAssistantContent = assistantPrototype.updateContent;
+	const originalContainerRender = containerPrototype.render;
 	const originalAddChild = containerPrototype.addChild;
 	const originalRemoveChild = containerPrototype.removeChild;
 	const originalClear = containerPrototype.clear;
@@ -864,6 +894,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 		typeof originalUpdateResult !== "function" ||
 		typeof originalSetExpanded !== "function" ||
 		typeof originalUpdateAssistantContent !== "function" ||
+		typeof originalContainerRender !== "function" ||
 		typeof originalAddChild !== "function" ||
 		typeof originalRemoveChild !== "function" ||
 		typeof originalClear !== "function"
@@ -884,6 +915,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	const updateResult = originalUpdateResult as UpdateResultMethod;
 	const setExpanded = originalSetExpanded as SetExpandedMethod;
 	const updateAssistantContent = originalUpdateAssistantContent as UpdateAssistantContentMethod;
+	const containerRender = originalContainerRender as ContainerRenderMethod;
 	const addChild = originalAddChild as AddChildMethod;
 	const removeChild = originalRemoveChild as RemoveChildMethod;
 	const clear = originalClear as ClearMethod;
@@ -914,6 +946,16 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	const wrappedUpdateAssistantContent: UpdateAssistantContentMethod = function (message) {
 		runtime.updateAssistant(this, message);
 	};
+	const wrappedContainerRender: ContainerRenderMethod = function (width) {
+		runtime.adopt(
+			this,
+			this.children.filter(
+				(component) => component instanceof toolClass || component instanceof assistantClass,
+			),
+			assistantClass,
+		);
+		return containerRender.call(this, width);
+	};
 	const wrappedAddChild: AddChildMethod = function (component) {
 		addChild.call(this, component);
 		if (component instanceof toolClass || component instanceof assistantClass) {
@@ -934,6 +976,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	toolPrototype.updateResult = wrappedUpdateResult;
 	toolPrototype.setExpanded = wrappedSetExpanded;
 	assistantPrototype.updateContent = wrappedUpdateAssistantContent;
+	containerPrototype.render = wrappedContainerRender;
 	containerPrototype.addChild = wrappedAddChild;
 	containerPrototype.removeChild = wrappedRemoveChild;
 	containerPrototype.clear = wrappedClear;
@@ -954,6 +997,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 			if (assistantPrototype.updateContent === wrappedUpdateAssistantContent) {
 				assistantPrototype.updateContent = updateAssistantContent;
 			}
+			if (containerPrototype.render === wrappedContainerRender) containerPrototype.render = containerRender;
 			if (containerPrototype.addChild === wrappedAddChild) containerPrototype.addChild = addChild;
 			if (containerPrototype.removeChild === wrappedRemoveChild) containerPrototype.removeChild = removeChild;
 			if (containerPrototype.clear === wrappedClear) containerPrototype.clear = clear;
