@@ -48,18 +48,15 @@ test("same-direction input at the same-batch boundary is accepted", () => {
 	assert.equal(state.acceleration.rapidEventCount, 1);
 });
 
-test("sustained accepted input starts acceleration on the twentieth event and ramps gently to the cap", () => {
+test("sustained accepted input starts acceleration on the tenth event and ramps gently to the cap", () => {
 	let state = createScrollState();
 	const steps: number[] = [];
-	for (let index = 0; index < 34; index += 1) {
+	for (let index = 0; index < 24; index += 1) {
 		const before = state.pendingDelta;
 		state = addWheelInput(state, 1, index * 10);
 		steps.push(state.pendingDelta - before);
 	}
-	assert.deepEqual(steps.slice(0, 23), [
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-		2, 2, 2, 3,
-	]);
+	assert.deepEqual(steps.slice(0, 13), [1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 3]);
 	assert.equal(Math.max(...steps), 6);
 	assert.equal(steps.at(-1), 6);
 });
