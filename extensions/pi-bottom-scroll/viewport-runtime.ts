@@ -14,6 +14,7 @@ import {
 interface TerminalLike {
 	columns: number;
 	rows: number;
+	drainInput(maxMs?: number, idleMs?: number): Promise<void>;
 	write(data: string): void;
 }
 
@@ -142,12 +143,15 @@ export class ViewportRuntime {
 	private readonly previousRenderDescriptor: PropertyDescriptor | undefined;
 	private readonly previousRequestRenderDescriptor: PropertyDescriptor | undefined;
 	private readonly previousStopDescriptor: PropertyDescriptor | undefined;
+	private readonly previousDrainInputDescriptor: PropertyDescriptor | undefined;
 	private readonly originalRender: TuiInternals["render"];
 	private readonly originalRequestRender: TuiInternals["requestRender"];
 	private readonly originalStop: TuiInternals["stop"];
+	private readonly originalDrainInput: TerminalLike["drainInput"];
 	private renderWrapper: TuiInternals["render"] | undefined;
 	private requestRenderWrapper: TuiInternals["requestRender"] | undefined;
 	private stopWrapper: TuiInternals["stop"] | undefined;
+	private drainInputWrapper: TerminalLike["drainInput"] | undefined;
 	private scrollState: ScrollState = createScrollState();
 	private historyCache: HistoryCache | undefined;
 	private installed = false;
@@ -172,9 +176,11 @@ export class ViewportRuntime {
 		this.previousRenderDescriptor = ownDescriptor(this.tui, "render");
 		this.previousRequestRenderDescriptor = ownDescriptor(this.tui, "requestRender");
 		this.previousStopDescriptor = ownDescriptor(this.tui, "stop");
+		this.previousDrainInputDescriptor = ownDescriptor(this.tui.terminal, "drainInput");
 		this.originalRender = this.tui.render;
 		this.originalRequestRender = this.tui.requestRender;
 		this.originalStop = this.tui.stop;
+		this.originalDrainInput = this.tui.terminal.drainInput;
 	}
 
 	install(): void {
@@ -203,6 +209,10 @@ export class ViewportRuntime {
 				this.originalStop.call(this.tui);
 			}
 		};
+		this.drainInputWrapper = (maxMs, idleMs) => {
+			this.onStop();
+			return this.originalDrainInput.call(this.tui.terminal, maxMs, idleMs);
+		};
 
 		Object.defineProperty(this.tui, "render", {
 			configurable: true,
@@ -221,6 +231,12 @@ export class ViewportRuntime {
 			enumerable: false,
 			writable: true,
 			value: this.stopWrapper,
+		});
+		Object.defineProperty(this.tui.terminal, "drainInput", {
+			configurable: true,
+			enumerable: false,
+			writable: true,
+			value: this.drainInputWrapper,
 		});
 	}
 
@@ -269,6 +285,14 @@ export class ViewportRuntime {
 		}
 		if (this.stopWrapper) {
 			restoreOwnedDescriptor(this.tui, "stop", this.stopWrapper, this.previousStopDescriptor);
+		}
+		if (this.drainInputWrapper) {
+			restoreOwnedDescriptor(
+				this.tui.terminal,
+				"drainInput",
+				this.drainInputWrapper,
+				this.previousDrainInputDescriptor,
+			);
 		}
 	}
 

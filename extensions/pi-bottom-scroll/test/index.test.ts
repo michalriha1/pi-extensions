@@ -26,6 +26,11 @@ class TestTerminal {
 	columns = 80;
 	rows = 8;
 	readonly writes: string[] = [];
+	readonly drainCalls: Array<{ maxMs: number | undefined; idleMs: number | undefined; writeCount: number }> = [];
+
+	async drainInput(maxMs?: number, idleMs?: number): Promise<void> {
+		this.drainCalls.push({ maxMs, idleMs, writeCount: this.writes.length });
+	}
 
 	write(data: string): void {
 		this.writes.push(data);
@@ -146,12 +151,23 @@ test("extension captures the live TUI, subscribes to terminal input, and cleans 
 	assert.match(session.tui.terminal.writes[1]!, /1007l.*1049l/);
 });
 
-test("wrapped TUI.stop restores extension modes even without session_shutdown", async () => {
+test("wrapped terminal drain restores extension modes before Pi pops its keyboard protocol", async () => {
+	const session = createSessionHarness();
+	await session.harness.handlers.get("session_start")?.({}, session.context);
+	await session.tui.terminal.drainInput(1_000, 50);
+	assert.deepEqual(session.tui.terminal.drainCalls, [{ maxMs: 1_000, idleMs: 50, writeCount: 2 }]);
+	assert.equal(session.tui.terminal.writes.length, 2);
+	assert.equal(Object.hasOwn(session.tui.terminal, "drainInput"), false);
+	assert.equal(session.getUnsubscribeCount(), 1);
+});
+
+test("wrapped TUI.stop restores extension modes even without drain or session_shutdown", async () => {
 	const session = createSessionHarness();
 	await session.harness.handlers.get("session_start")?.({}, session.context);
 	session.tui.stop();
 	assert.equal(session.tui.stopCalls, 1);
 	assert.equal(session.tui.terminal.writes.length, 2);
 	assert.equal(Object.hasOwn(session.tui, "stop"), false);
+	assert.equal(Object.hasOwn(session.tui.terminal, "drainInput"), false);
 	assert.equal(session.getUnsubscribeCount(), 1);
 });
