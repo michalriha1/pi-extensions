@@ -1,0 +1,25 @@
+{
+	"compilerOptions": {
+		"allowImportingTsExtensions": true,
+		"erasableSyntaxOnly": true,
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"noEmit": true,
+		"noUncheckedIndexedAccess": true,
+		"paths": {
+			"@earendil-works/pi-coding-agent": [
+				"/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+			],
+			"@earendil-works/pi-tui": [
+				"/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/index.d.ts"
+			]
+		},
+		"skipLibCheck": true,
+		"strict": true,
+		"target": "ES2024",
+		"types": ["node"],
+		"typeRoots": ["/Users/michalriha/workspace/personal/pi/node_modules/@types"],
+		"verbatimModuleSyntax": true
+	},
+	"include": ["./*.ts", "./test/*.ts"]
+}
