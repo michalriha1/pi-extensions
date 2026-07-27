@@ -5,6 +5,7 @@ import {
 	addWheelInput,
 	createScrollState,
 	drainScrollFrame,
+	navigateScroll,
 	reconcileScrollBounds,
 } from "../scroll-logic.ts";
 
@@ -92,6 +93,23 @@ test("direction reversal discards old momentum and applies promptly", () => {
 	const frame = drainScrollFrame(state, BOUNDS);
 	assert.equal(frame.appliedDelta, -1);
 	assert.equal(frame.state.viewportTop, 39);
+});
+
+test("navigation jumps to boundaries and moves by half a viewport", () => {
+	let state = reconcileScrollBounds(createScrollState(), BOUNDS);
+	state = navigateScroll(state, BOUNDS, "half-page-up");
+	assert.equal(state.viewportTop, 70);
+	assert.equal(state.followBottom, false);
+
+	state = navigateScroll(state, BOUNDS, "top");
+	assert.equal(state.viewportTop, 0);
+	state = navigateScroll(state, BOUNDS, "half-page-down");
+	assert.equal(state.viewportTop, 10);
+	state = navigateScroll({ ...state, pendingDelta: 5 }, BOUNDS, "bottom");
+	assert.equal(state.viewportTop, 80);
+	assert.equal(state.followBottom, true);
+	assert.equal(state.pendingDelta, 0);
+	assert.equal(state.acceleration.lastDirection, 0);
 });
 
 test("bounds clamp pending motion and follow-bottom tracks growth", () => {

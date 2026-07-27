@@ -4,10 +4,12 @@ import {
 	addWheelInput,
 	createScrollState,
 	drainScrollFrame,
+	navigateScroll,
 	reconcileScrollBounds,
 	resetScrollMotion,
 	type ScrollBounds,
 	type ScrollDirection,
+	type ScrollNavigation,
 	type ScrollState,
 } from "./scroll-logic.ts";
 
@@ -249,6 +251,17 @@ export class ViewportRuntime {
 	enqueueWheel(direction: ScrollDirection, now: number): boolean {
 		if (!this.canConsumeScroll()) return false;
 		this.scrollState = addWheelInput(this.scrollState, direction, now);
+		this.queueScrollRender();
+		return true;
+	}
+
+	navigate(navigation: ScrollNavigation): boolean {
+		if (!this.canConsumeScroll()) return false;
+		this.scrollState = navigateScroll(
+			this.scrollState,
+			{ historyLineCount: this.historyLineCount, viewportRows: this.viewportRows },
+			navigation,
+		);
 		this.queueScrollRender();
 		return true;
 	}

@@ -46,6 +46,32 @@ class CaptureWidget implements Component {
 
 export default function piBottomScroll(pi: ExtensionAPI): void {
 	let cleanupActiveSession: () => void = () => {};
+	let activeViewport: ViewportRuntime | undefined;
+
+	pi.registerShortcut("shift+up", {
+		description: "Scroll history up by half a page",
+		handler: () => {
+			activeViewport?.navigate("half-page-up");
+		},
+	});
+	pi.registerShortcut("shift+down", {
+		description: "Scroll history down by half a page",
+		handler: () => {
+			activeViewport?.navigate("half-page-down");
+		},
+	});
+	pi.registerShortcut("ctrl+shift+up", {
+		description: "Scroll history to the top",
+		handler: () => {
+			activeViewport?.navigate("top");
+		},
+	});
+	pi.registerShortcut("ctrl+shift+down", {
+		description: "Scroll history to the bottom",
+		handler: () => {
+			activeViewport?.navigate("bottom");
+		},
+	});
 
 	pi.on("session_start", (_event, ctx) => {
 		cleanupActiveSession();
@@ -62,6 +88,7 @@ export default function piBottomScroll(pi: ExtensionAPI): void {
 			unsubscribeInput?.();
 			unsubscribeInput = undefined;
 			viewport?.dispose();
+			if (activeViewport === viewport) activeViewport = undefined;
 			terminalModes?.deactivate();
 			if (cleanupActiveSession === cleanup) cleanupActiveSession = () => {};
 		};
@@ -73,13 +100,16 @@ export default function piBottomScroll(pi: ExtensionAPI): void {
 			(tui: TUI) => {
 				viewport = createViewportRuntime(tui, captureWidget, cleanup);
 				viewport.install();
+				activeViewport = viewport;
 				terminalModes = new TerminalModes(tui.terminal);
 				terminalModes.activate();
 				unsubscribeInput = ctx.ui.onTerminalInput((data) => {
 					const direction = decodeAlternateScrollCursorSequence(data);
-					if (!direction || !viewport) return undefined;
-					const consumed = viewport.enqueueWheel(direction === "up" ? -1 : 1, performance.now());
-					return consumed ? { consume: true } : undefined;
+					if (!direction) return undefined;
+					viewport?.enqueueWheel(direction === "up" ? -1 : 1, performance.now());
+					// Alternate-scroll mode turns wheel ticks into cursor reports. Never let
+					// those reports reach Pi's editor when the viewport is temporarily inactive.
+					return { consume: true };
 				});
 				return captureWidget;
 			},

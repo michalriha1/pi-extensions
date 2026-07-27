@@ -79,9 +79,14 @@ type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string
 
 class ExtensionHarness {
 	readonly handlers = new Map<string, ExtensionHandler>();
+	readonly shortcuts = new Map<string, { description: string; handler: () => unknown }>();
 
 	on(event: string, handler: ExtensionHandler): void {
 		this.handlers.set(event, handler);
+	}
+
+	registerShortcut(shortcut: string, options: { description: string; handler: () => unknown }): void {
+		this.shortcuts.set(shortcut, options);
 	}
 }
 
@@ -90,6 +95,7 @@ function createSessionHarness(): {
 	tui: TestTui;
 	context: object;
 	getInputHandler: () => TerminalInputHandler | undefined;
+	getShortcut: (shortcut: string) => (() => unknown) | undefined;
 	getUnsubscribeCount: () => number;
 	getWidget: () => (Component & { dispose?(): void }) | undefined;
 } {
@@ -127,6 +133,7 @@ function createSessionHarness(): {
 		tui,
 		context,
 		getInputHandler: () => inputHandler,
+		getShortcut: (shortcut) => harness.shortcuts.get(shortcut)?.handler,
 		getUnsubscribeCount: () => unsubscribeCount,
 		getWidget: () => widget,
 	};
@@ -149,6 +156,35 @@ test("extension captures the live TUI, subscribes to terminal input, and cleans 
 	assert.equal(Object.hasOwn(session.tui, "render"), false);
 	assert.equal(session.tui.terminal.writes.length, 2);
 	assert.match(session.tui.terminal.writes[1]!, /1007l.*1049l/);
+});
+
+test("wheel cursor reports are consumed while the viewport is not ready", async () => {
+	const session = createSessionHarness();
+	await session.harness.handlers.get("session_start")?.({}, session.context);
+
+	assert.deepEqual(session.getInputHandler()?.("\x1b[A"), { consume: true });
+	assert.deepEqual(session.getInputHandler()?.("\x1b[B"), { consume: true });
+});
+
+test("shortcuts navigate by half pages and jump to history boundaries", async () => {
+	const session = createSessionHarness();
+	assert.deepEqual([...session.harness.shortcuts.keys()], [
+		"shift+up",
+		"shift+down",
+		"ctrl+shift+up",
+		"ctrl+shift+down",
+	]);
+	await session.harness.handlers.get("session_start")?.({}, session.context);
+	assert.deepEqual(session.tui.render(80).slice(0, 6), ["h4", "h5", "h6", "h7", "h8", "h9"]);
+
+	session.getShortcut("shift+up")?.();
+	assert.deepEqual(session.tui.render(80).slice(0, 6), ["h1", "h2", "h3", "h4", "h5", "h6"]);
+	session.getShortcut("ctrl+shift+up")?.();
+	assert.deepEqual(session.tui.render(80).slice(0, 6), ["h0", "h1", "h2", "h3", "h4", "h5"]);
+	session.getShortcut("shift+down")?.();
+	assert.deepEqual(session.tui.render(80).slice(0, 6), ["h3", "h4", "h5", "h6", "h7", "h8"]);
+	session.getShortcut("ctrl+shift+down")?.();
+	assert.deepEqual(session.tui.render(80).slice(0, 6), ["h4", "h5", "h6", "h7", "h8", "h9"]);
 });
 
 test("wrapped terminal drain restores extension modes before Pi pops its keyboard protocol", async () => {

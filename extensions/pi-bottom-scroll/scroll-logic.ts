@@ -1,4 +1,5 @@
 export type ScrollDirection = -1 | 1;
+export type ScrollNavigation = "top" | "bottom" | "half-page-up" | "half-page-down";
 
 export interface ScrollAcceleration {
 	lastDirection: ScrollDirection | 0;
@@ -117,6 +118,36 @@ export function drainScrollFrame(state: ScrollState, bounds: ScrollBounds): Scro
 		appliedDelta,
 		changed: appliedDelta !== 0 || reconciled.followBottom !== followBottom,
 	};
+}
+
+export function navigateScroll(
+	state: ScrollState,
+	bounds: ScrollBounds,
+	navigation: ScrollNavigation,
+): ScrollState {
+	const reconciled = reconcileScrollBounds(state, bounds);
+	const maximum = maximumViewportTop(bounds);
+	const halfPage = Math.max(1, Math.floor(Math.max(0, Math.trunc(bounds.viewportRows)) / 2));
+	let viewportTop: number;
+	switch (navigation) {
+		case "top":
+			viewportTop = 0;
+			break;
+		case "bottom":
+			viewportTop = maximum;
+			break;
+		case "half-page-up":
+			viewportTop = clamp(reconciled.viewportTop - halfPage, 0, maximum);
+			break;
+		case "half-page-down":
+			viewportTop = clamp(reconciled.viewportTop + halfPage, 0, maximum);
+			break;
+	}
+	return resetScrollMotion({
+		...reconciled,
+		viewportTop,
+		followBottom: viewportTop >= maximum,
+	});
 }
 
 export function resetScrollMotion(state: ScrollState): ScrollState {
