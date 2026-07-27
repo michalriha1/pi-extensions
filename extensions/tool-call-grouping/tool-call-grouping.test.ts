@@ -281,37 +281,28 @@ describe("exploration classification", () => {
 		expect(isExplorationTool({ name: "bash", args: { command: "ls -la", intentKind: "modify" } })).toBe(false);
 	});
 
-	test("reads and bounds model intent phrases", () => {
+	test("reads the model intent kind and ignores unknown values", () => {
 		expect(toolIntentKind({ intentKind: "explore" })).toBe("explore");
 		expect(toolIntentKind({ intentKind: "delete" })).toBeUndefined();
 		expect(toolIntentKind(undefined)).toBeUndefined();
-		expect(toolIntentPhrase({ intent: "  Checking\u001B[31m the parser\n" })).toBe("Checking the parser");
-		expect(toolIntentPhrase({ intent: "" })).toBeUndefined();
-		const long = toolIntentPhrase({ intent: "x".repeat(INTENT_MAX_LENGTH + 40) });
-		expect(long).toHaveLength(INTENT_MAX_LENGTH);
-		expect(long?.endsWith("\u2026")).toBe(true);
 	});
 
-	test("shows the intent phrase beside deterministic summaries", () => {
-		expect(formatExplorationSummary({ name: "bash", args: { command: "git status", intent: "Checking the tree" } })).toBe(
-			"$ git status \u2014 Checking the tree",
-		);
-		expect(formatCommandSummary({ name: "bash", args: { command: "npm test", intent: "Verifying the suite" } })).toBe(
-			"$ npm test \u2014 Verifying the suite",
+	test("leaves deterministic summaries untouched", () => {
+		expect(formatExplorationSummary({ name: "bash", args: { command: "git status", intentKind: "explore" } })).toBe(
+			"$ git status",
 		);
 		expect(formatExplorationSummary({ name: "read", args: { path: "a.ts" } })).toBe("Read a.ts");
 	});
 
-	test("injects optional intent fields into an object schema in place", () => {
+	test("injects an optional intent field into an object schema in place", () => {
 		const parameters = Type.Object({ command: Type.String() }) as unknown as Record<string, unknown>;
-		expect(injectIntentSchema(parameters)).toBe("injected");
+		expect(injectIntentSchema(parameters)).toBe(true);
 		const properties = parameters.properties as Record<string, Record<string, unknown>>;
 		expect(properties.intentKind?.enum).toEqual(["explore", "modify"]);
-		expect(properties.intent?.maxLength).toBe(INTENT_MAX_LENGTH);
 		expect(parameters.required).toEqual(["command"]);
-		expect(injectIntentSchema(parameters)).toBe("already-present");
-		expect(injectIntentSchema(Type.String())).toBe("unsupported");
-		expect(injectIntentSchema(undefined)).toBe("unsupported");
+		expect(injectIntentSchema(parameters)).toBe(true);
+		expect(injectIntentSchema(Type.String())).toBe(false);
+		expect(injectIntentSchema(undefined)).toBe(false);
 	});
 
 	test("injects only into listed built-in tools", () => {
@@ -321,21 +312,17 @@ describe("exploration classification", () => {
 			{ name: "read", parameters: Type.Object({ path: Type.String() }), sourceInfo: builtin },
 			{ name: "mcp", parameters: Type.Object({ tool: Type.String() }), sourceInfo: { source: "extension" } },
 		];
-		const report = injectIntentSchemas(tools);
-		expect(report.injected).toEqual(["bash"]);
-		expect(hasIntentSchema(report)).toBe(true);
-		expect("intent" in (tools[1]?.parameters.properties ?? {})).toBe(false);
-
-		const foreign = injectIntentSchemas(tools, ["mcp"]);
-		expect(foreign.injected).toEqual([]);
-		expect(foreign.unsupported).toEqual(["mcp"]);
-		expect(hasIntentSchema(foreign)).toBe(false);
+		expect(injectIntentSchemas(tools)).toBe(true);
+		expect("intentKind" in (tools[0]?.parameters.properties ?? {})).toBe(true);
+		expect("intentKind" in (tools[1]?.parameters.properties ?? {})).toBe(false);
+		expect(injectIntentSchemas(tools, ["mcp"])).toBe(false);
+		expect("intentKind" in (tools[2]?.parameters.properties ?? {})).toBe(false);
 	});
 
-	test("describes both intent fields in the prompt guideline", () => {
+	test("describes the intent field in the prompt guideline", () => {
 		expect(INTENT_PROMPT_GUIDELINE).toContain("intentKind");
-		expect(INTENT_PROMPT_GUIDELINE).toContain("intent");
-		expect(INTENT_PROMPT_GUIDELINE).toContain(String(INTENT_MAX_LENGTH));
+		expect(INTENT_PROMPT_GUIDELINE).toContain("explore");
+		expect(INTENT_PROMPT_GUIDELINE.split("\n")).toHaveLength(1);
 	});
 
 	test("conservatively classifies direct custom tools from metadata tokens", () => {

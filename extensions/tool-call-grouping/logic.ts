@@ -1,12 +1,9 @@
 export const EXPLORATION_BUILT_INS = new Set(["read", "grep", "find", "ls"]);
 
-/** Model-written fields injected into owned tool schemas by `intent.ts`. */
-export const INTENT_FIELD = "intent";
+/** Model-written field injected into owned tool schemas by `intent.ts`. */
 export const INTENT_KIND_FIELD = "intentKind";
 export const INTENT_KINDS = ["explore", "modify"] as const;
 export type IntentKind = (typeof INTENT_KINDS)[number];
-/** Bound on displayed intent text; the schema advertises the same limit. */
-export const INTENT_MAX_LENGTH = 80;
 
 export const PI_WEB_ACCESS_TOOLS = new Set(["web_search", "fetch_content", "get_search_content"]);
 export const SHELL_TOOL_NAMES = new Set(["bash", "hypa_shell"]);
@@ -890,18 +887,6 @@ export function toolIntentKind(args: unknown): IntentKind | undefined {
 		: undefined;
 }
 
-/** Read the model-written intent phrase, sanitized and length-bounded. */
-export function toolIntentPhrase(args: unknown): string | undefined {
-	const phrase = stringArg(args, [INTENT_FIELD]);
-	if (!phrase) return undefined;
-	return phrase.length > INTENT_MAX_LENGTH ? `${phrase.slice(0, INTENT_MAX_LENGTH - 1).trimEnd()}…` : phrase;
-}
-
-function withIntent(summary: string, args: unknown): string {
-	const phrase = toolIntentPhrase(args);
-	return phrase ? `${summary} — ${phrase}` : summary;
-}
-
 export function isExplorationTool(tool: ExplorationToolDescriptor): boolean {
 	const name = tool.name.toLowerCase();
 	// The model may always downgrade a call out of the exploration group; it may
@@ -1091,7 +1076,7 @@ export function formatMutationStatistics(tool: ExplorationToolDescriptor, detail
 }
 
 export function formatCommandSummary(tool: ExplorationToolDescriptor): string {
-	return withIntent(`$ ${stringArg(tool.args, ["command"]) ?? "…"}`, tool.args);
+	return `$ ${stringArg(tool.args, ["command"]) ?? "…"}`;
 }
 
 export function formatRemoteActionSummary(tool: ExplorationToolDescriptor): string {
@@ -1104,10 +1089,6 @@ export function formatRemoteActionSummary(tool: ExplorationToolDescriptor): stri
 }
 
 export function formatExplorationSummary(tool: ExplorationToolDescriptor): string {
-	return withIntent(explorationSummary(tool), tool.args);
-}
-
-function explorationSummary(tool: ExplorationToolDescriptor): string {
 	const name = tool.name.toLowerCase();
 	if (name === "read") return formatRead(tool.args);
 	if (name === "grep") {
