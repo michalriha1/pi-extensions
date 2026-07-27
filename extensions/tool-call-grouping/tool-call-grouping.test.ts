@@ -15,14 +15,25 @@ import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import toolCallGroupingExtension from "./index.ts";
 import {
+	hasIntentSchema,
+	INTENT_PROMPT_GUIDELINE,
+	injectIntentSchema,
+	injectIntentSchemas,
+} from "./intent.ts";
+import {
+	classifyShellCommand,
 	classifyToolPresentation,
 	type ExplorationToolDescriptor,
+	formatCommandSummary,
 	formatExplorationSummary,
 	formatRemoteActionSummary,
 	generateSelectionLabels,
 	groupExplorationItems,
+	INTENT_MAX_LENGTH,
 	isExplorationTool,
 	isReadOnlyShellCommand,
+	toolIntentKind,
+	toolIntentPhrase,
 } from "./logic.ts";
 import { installToolCallGroupingPatch } from "./patch.ts";
 
@@ -225,6 +236,106 @@ describe("exploration classification", () => {
 		expect(isReadOnlyShellCommand(command)).toBe(false);
 		expect(isExplorationTool({ name: "bash", args: { command } })).toBe(false);
 		expect(isExplorationTool({ name: "hypa_shell", args: { command } })).toBe(false);
+	});
+
+	test.each([
+		["pwd", "read-only"],
+		["cd repo && git status --short", "read-only"],
+		["rm -rf build", "mutating"],
+		["cd /tmp && touch file", "mutating"],
+		["git commit -m wip", "mutating"],
+		["git branch new-feature", "mutating"],
+		["sed -i 's/a/b/' file", "mutating"],
+		["echo hi > file", "mutating"],
+		["for f in a b; do rm \"$f\"; done", "mutating"],
+		["cat data.json | python3 -c 'import sys, json; print(len(sys.stdin.read()))'", "unknown"],
+		["node -e 'console.log(1)'", "unknown"],
+		["npm ls --depth 0", "unknown"],
+		["gh pr view 12", "unknown"],
+		["", "unknown"],
+	])("assigns a three-state shell verdict: %s", (command, verdict) => {
+		expect(classifyShellCommand(command)).toBe(verdict);
+	});
+
+	test("consults model intent only for undecidable shell commands", () => {
+		const undecidable = "cat data.json | python3 -c 'print(1)'";
+		expect(isExplorationTool({ name: "bash", args: { command: undecidable } })).toBe(false);
+		expect(isExplorationTool({ name: "bash", args: { command: undecidable, intentKind: "explore" } })).toBe(true);
+		expect(isExplorationTool({ name: "bash", args: { command: undecidable, intentKind: "modify" } })).toBe(false);
+		expect(isExplorationTool({ name: "bash", args: { command: undecidable, intentKind: "nonsense" } })).toBe(false);
+	});
+
+	test("never lets model intent override a proven verdict", () => {
+		expect(isExplorationTool({ name: "bash", args: { command: "rm -rf build", intentKind: "explore" } })).toBe(false);
+		expect(isExplorationTool({ name: "bash", args: { command: "git commit -m wip", intentKind: "explore" } })).toBe(
+			false,
+		);
+		expect(classifyToolPresentation({ name: "bash", args: { command: "rm -rf build", intentKind: "explore" } })).toBe(
+			"command",
+		);
+	});
+
+	test("lets model intent downgrade any call out of the exploration group", () => {
+		expect(isExplorationTool({ name: "read", args: { path: "a.ts" } })).toBe(true);
+		expect(isExplorationTool({ name: "read", args: { path: "a.ts", intentKind: "modify" } })).toBe(false);
+		expect(isExplorationTool({ name: "bash", args: { command: "ls -la", intentKind: "modify" } })).toBe(false);
+	});
+
+	test("reads and bounds model intent phrases", () => {
+		expect(toolIntentKind({ intentKind: "explore" })).toBe("explore");
+		expect(toolIntentKind({ intentKind: "delete" })).toBeUndefined();
+		expect(toolIntentKind(undefined)).toBeUndefined();
+		expect(toolIntentPhrase({ intent: "  Checking\u001B[31m the parser\n" })).toBe("Checking the parser");
+		expect(toolIntentPhrase({ intent: "" })).toBeUndefined();
+		const long = toolIntentPhrase({ intent: "x".repeat(INTENT_MAX_LENGTH + 40) });
+		expect(long).toHaveLength(INTENT_MAX_LENGTH);
+		expect(long?.endsWith("\u2026")).toBe(true);
+	});
+
+	test("shows the intent phrase beside deterministic summaries", () => {
+		expect(formatExplorationSummary({ name: "bash", args: { command: "git status", intent: "Checking the tree" } })).toBe(
+			"$ git status \u2014 Checking the tree",
+		);
+		expect(formatCommandSummary({ name: "bash", args: { command: "npm test", intent: "Verifying the suite" } })).toBe(
+			"$ npm test \u2014 Verifying the suite",
+		);
+		expect(formatExplorationSummary({ name: "read", args: { path: "a.ts" } })).toBe("Read a.ts");
+	});
+
+	test("injects optional intent fields into an object schema in place", () => {
+		const parameters = Type.Object({ command: Type.String() }) as unknown as Record<string, unknown>;
+		expect(injectIntentSchema(parameters)).toBe("injected");
+		const properties = parameters.properties as Record<string, Record<string, unknown>>;
+		expect(properties.intentKind?.enum).toEqual(["explore", "modify"]);
+		expect(properties.intent?.maxLength).toBe(INTENT_MAX_LENGTH);
+		expect(parameters.required).toEqual(["command"]);
+		expect(injectIntentSchema(parameters)).toBe("already-present");
+		expect(injectIntentSchema(Type.String())).toBe("unsupported");
+		expect(injectIntentSchema(undefined)).toBe("unsupported");
+	});
+
+	test("injects only into listed built-in tools", () => {
+		const builtin = { source: "builtin" };
+		const tools = [
+			{ name: "bash", parameters: Type.Object({ command: Type.String() }), sourceInfo: builtin },
+			{ name: "read", parameters: Type.Object({ path: Type.String() }), sourceInfo: builtin },
+			{ name: "mcp", parameters: Type.Object({ tool: Type.String() }), sourceInfo: { source: "extension" } },
+		];
+		const report = injectIntentSchemas(tools);
+		expect(report.injected).toEqual(["bash"]);
+		expect(hasIntentSchema(report)).toBe(true);
+		expect("intent" in (tools[1]?.parameters.properties ?? {})).toBe(false);
+
+		const foreign = injectIntentSchemas(tools, ["mcp"]);
+		expect(foreign.injected).toEqual([]);
+		expect(foreign.unsupported).toEqual(["mcp"]);
+		expect(hasIntentSchema(foreign)).toBe(false);
+	});
+
+	test("describes both intent fields in the prompt guideline", () => {
+		expect(INTENT_PROMPT_GUIDELINE).toContain("intentKind");
+		expect(INTENT_PROMPT_GUIDELINE).toContain("intent");
+		expect(INTENT_PROMPT_GUIDELINE).toContain(String(INTENT_MAX_LENGTH));
 	});
 
 	test("conservatively classifies direct custom tools from metadata tokens", () => {

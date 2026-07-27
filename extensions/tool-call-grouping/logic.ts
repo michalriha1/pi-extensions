@@ -1,4 +1,13 @@
 export const EXPLORATION_BUILT_INS = new Set(["read", "grep", "find", "ls"]);
+
+/** Model-written fields injected into owned tool schemas by `intent.ts`. */
+export const INTENT_FIELD = "intent";
+export const INTENT_KIND_FIELD = "intentKind";
+export const INTENT_KINDS = ["explore", "modify"] as const;
+export type IntentKind = (typeof INTENT_KINDS)[number];
+/** Bound on displayed intent text; the schema advertises the same limit. */
+export const INTENT_MAX_LENGTH = 80;
+
 export const PI_WEB_ACCESS_TOOLS = new Set(["web_search", "fetch_content", "get_search_content"]);
 export const SHELL_TOOL_NAMES = new Set(["bash", "hypa_shell"]);
 export const EASY_MOTION_ALPHABET = "asdfghjklqwertyuiopzxcvbnm";
@@ -155,8 +164,53 @@ const SHELL_CONTROL_WORDS = new Set(["do", "then", "else", "elif", "if", "while"
 const SHELL_BLOCK_WORDS = new Set(["done", "fi", "esac", "{", "}", "(", ")", ";;"]);
 const SHELL_WORD_LIST_KEYWORDS = new Set(["for", "select", "case"]);
 
+// Commands that unambiguously change state. They let a deterministic "mutating"
+// verdict beat a model-written `intentKind: "explore"`. Ambiguous tools whose
+// subcommands may be read-only (npm, docker, kubectl, gh, brew, terraform) are
+// deliberately absent so intent can still describe them.
+const MUTATING_SHELL_COMMANDS = new Set([
+	"apt",
+	"apt-get",
+	"chgrp",
+	"chmod",
+	"chown",
+	"cp",
+	"dd",
+	"dnf",
+	"install",
+	"kill",
+	"killall",
+	"launchctl",
+	"ln",
+	"make",
+	"mkdir",
+	"mv",
+	"pacman",
+	"pkill",
+	"rm",
+	"rmdir",
+	"rsync",
+	"shred",
+	"systemctl",
+	"tee",
+	"touch",
+	"truncate",
+	"unlink",
+	"yum",
+]);
+
+const MUTATING_COMMAND_PATTERN = new RegExp(
+	`(?:^|[\\s;&|(])(?:${[...MUTATING_SHELL_COMMANDS].join("|")})(?=$|[\\s;&|)])`,
+);
+// A redirect whose target is neither /dev/null nor a file-descriptor duplication.
+const FILE_REDIRECT_PATTERN = />>?\s*(?!\s*(?:&[0-9]|\/dev\/null(?:$|[\s;&|])))/;
+
 const READ_ONLY_GIT_SUBCOMMANDS = new Set([
 	"annotate",
+	"cherry",
+	"range-diff",
+	"verify-commit",
+	"verify-tag",
 	"blame",
 	"cat-file",
 	"check-attr",
@@ -748,6 +802,58 @@ export function isReadOnlyShellCommand(command: string): boolean {
 	return stages !== undefined && stages.every(isReadOnlyShellStage);
 }
 
+/**
+ * `read-only` and `mutating` are deterministic verdicts that the model cannot
+ * override. `unknown` covers commands this parser cannot decide — interpreters
+ * (`python3 -c`), unrecognized binaries, unsupported syntax — and is the only
+ * verdict where a model-written `intentKind` is consulted.
+ */
+export type ShellCommandVerdict = "read-only" | "mutating" | "unknown";
+
+function isMutatingShellStage(tokens: readonly string[]): boolean {
+	const command = tokens[0];
+	if (!command) return false;
+	// Look past control words and wrappers to the command that actually runs.
+	if (SHELL_BLOCK_WORDS.has(command) || SHELL_CONTROL_WORDS.has(command)) {
+		return tokens.length > 1 && isMutatingShellStage(tokens.slice(1));
+	}
+	if (SHELL_WORD_LIST_KEYWORDS.has(command)) return false;
+	const name = shellCommandName(command);
+	if (MUTATING_SHELL_COMMANDS.has(name)) return true;
+	if (name === "env") {
+		const index = tokens.slice(1).findIndex((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token) && !token.startsWith("-"));
+		return index >= 0 && isMutatingShellStage(tokens.slice(index + 1));
+	}
+	if (name === "xargs") {
+		const index = tokens.slice(1).findIndex((token) => !token.startsWith("-"));
+		return index >= 0 && isMutatingShellStage(tokens.slice(index + 1));
+	}
+	// Any git subcommand not proven read-only is treated as mutating.
+	if (name === "git") return true;
+	if (name === "sed") return tokens.slice(1).some((token) => token.startsWith("-i"));
+	return false;
+}
+
+function shellStageVerdict(tokens: readonly string[]): ShellCommandVerdict {
+	if (isReadOnlyShellStage(tokens)) return "read-only";
+	return isMutatingShellStage(tokens) ? "mutating" : "unknown";
+}
+
+export function classifyShellCommand(command: string): ShellCommandVerdict {
+	const trimmed = command.trim();
+	if (trimmed.length === 0) return "unknown";
+	const stages = parseShellPipeline(trimmed);
+	if (stages === undefined) {
+		// Unparseable input: fall back to a textual scan so obvious destruction
+		// inside unsupported syntax is still reported as mutating.
+		if (FILE_REDIRECT_PATTERN.test(trimmed) || MUTATING_COMMAND_PATTERN.test(trimmed)) return "mutating";
+		return "unknown";
+	}
+	const verdicts = stages.map(shellStageVerdict);
+	if (verdicts.includes("mutating")) return "mutating";
+	return verdicts.every((verdict) => verdict === "read-only") ? "read-only" : "unknown";
+}
+
 function operationValues(args: unknown): string[] {
 	if (!isRecord(args)) return [];
 	const values: string[] = [];
@@ -775,12 +881,39 @@ function metadataText(tool: ExplorationToolDescriptor): string {
 		.join(" ");
 }
 
+/** Read the model-written intent kind, ignoring unknown values. */
+export function toolIntentKind(args: unknown): IntentKind | undefined {
+	if (!isRecord(args)) return undefined;
+	const value = args[INTENT_KIND_FIELD];
+	return typeof value === "string" && (INTENT_KINDS as readonly string[]).includes(value)
+		? (value as IntentKind)
+		: undefined;
+}
+
+/** Read the model-written intent phrase, sanitized and length-bounded. */
+export function toolIntentPhrase(args: unknown): string | undefined {
+	const phrase = stringArg(args, [INTENT_FIELD]);
+	if (!phrase) return undefined;
+	return phrase.length > INTENT_MAX_LENGTH ? `${phrase.slice(0, INTENT_MAX_LENGTH - 1).trimEnd()}…` : phrase;
+}
+
+function withIntent(summary: string, args: unknown): string {
+	const phrase = toolIntentPhrase(args);
+	return phrase ? `${summary} — ${phrase}` : summary;
+}
+
 export function isExplorationTool(tool: ExplorationToolDescriptor): boolean {
 	const name = tool.name.toLowerCase();
+	// The model may always downgrade a call out of the exploration group; it may
+	// never upgrade one that this module proved to be a mutation.
+	if (toolIntentKind(tool.args) === "modify") return false;
 	if (EXPLORATION_BUILT_INS.has(name) || PI_WEB_ACCESS_TOOLS.has(name)) return true;
 	if (SHELL_TOOL_NAMES.has(name)) {
 		const command = isRecord(tool.args) && typeof tool.args.command === "string" ? tool.args.command : undefined;
-		return command !== undefined && command.trim().length > 0 && isReadOnlyShellCommand(command);
+		if (command === undefined) return false;
+		const verdict = classifyShellCommand(command);
+		if (verdict !== "unknown") return verdict === "read-only";
+		return toolIntentKind(tool.args) === "explore";
 	}
 	if (name === "agent") return stringArg(tool.args, ["subagent_type"])?.toLowerCase() === "explore";
 	if (name === "get_subagent_result") return true;
@@ -958,7 +1091,7 @@ export function formatMutationStatistics(tool: ExplorationToolDescriptor, detail
 }
 
 export function formatCommandSummary(tool: ExplorationToolDescriptor): string {
-	return `$ ${stringArg(tool.args, ["command"]) ?? "…"}`;
+	return withIntent(`$ ${stringArg(tool.args, ["command"]) ?? "…"}`, tool.args);
 }
 
 export function formatRemoteActionSummary(tool: ExplorationToolDescriptor): string {
@@ -971,6 +1104,10 @@ export function formatRemoteActionSummary(tool: ExplorationToolDescriptor): stri
 }
 
 export function formatExplorationSummary(tool: ExplorationToolDescriptor): string {
+	return withIntent(explorationSummary(tool), tool.args);
+}
+
+function explorationSummary(tool: ExplorationToolDescriptor): string {
 	const name = tool.name.toLowerCase();
 	if (name === "read") return formatRead(tool.args);
 	if (name === "grep") {

@@ -1,5 +1,11 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import {
+	hasIntentSchema,
+	INTENT_PROMPT_GUIDELINE,
+	type IntentInjectionReport,
+	injectIntentSchemas,
+} from "./intent.ts";
 import { installToolCallGroupingPatch } from "./patch.ts";
 
 const ACTIVE_THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
@@ -12,6 +18,10 @@ export default function toolCallGroupingExtension(pi: ExtensionAPI): void {
 	let currentTheme: Theme | undefined;
 	let patch: ReturnType<typeof installToolCallGroupingPatch> | undefined;
 	let cancelActiveSelection: (() => void) | undefined;
+
+	// Re-applied every turn: pi rebuilds tool definitions when tools are
+	// registered, reloaded, or re-activated, and injection is idempotent.
+	const applyIntentSchemas = (): IntentInjectionReport => injectIntentSchemas(pi.getAllTools());
 
 	const cancelSelection = () => {
 		cancelActiveSelection?.();
@@ -77,8 +87,16 @@ export default function toolCallGroupingExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	// Intent costs tokens on every owned tool call, so it is only requested where
+	// the grouped renderer can actually show it.
+	pi.on("before_agent_start", (event, ctx) => {
+		if (ctx.mode !== "tui" || !hasIntentSchema(applyIntentSchemas())) return;
+		return { systemPrompt: `${event.systemPrompt}\n\n${INTENT_PROMPT_GUIDELINE}` };
+	});
+
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
+		applyIntentSchemas();
 		cancelSelection();
 		currentTheme = ctx.ui.theme;
 		patch = installToolCallGroupingPatch({ getTheme: () => currentTheme ?? getActiveTheme() });
@@ -96,5 +114,6 @@ export default function toolCallGroupingExtension(pi: ExtensionAPI): void {
 	});
 }
 
+export * from "./intent.ts";
 export * from "./logic.ts";
 export { installToolCallGroupingPatch } from "./patch.ts";
