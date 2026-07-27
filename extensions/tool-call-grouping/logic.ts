@@ -80,48 +80,212 @@ const TARGET_KEYS = [
 ] as const;
 
 const READ_ONLY_SHELL_COMMANDS = new Set([
+	"[",
+	"base64",
+	"basename",
+	"bat",
 	"cat",
+	"cksum",
 	"cmp",
 	"comm",
+	"column",
 	"cut",
+	"date",
 	"df",
 	"diff",
+	"dirname",
 	"du",
+	"echo",
+	"egrep",
+	"expand",
+	"expr",
+	"false",
+	"fgrep",
 	"file",
+	"fold",
 	"grep",
 	"head",
+	"hostname",
+	"id",
+	"jq",
+	"join",
 	"ls",
+	"md5",
+	"md5sum",
+	"nl",
+	"od",
+	"paste",
+	"printenv",
+	"printf",
 	"pwd",
+	"read",
+	"readlink",
 	"realpath",
+	"rev",
 	"rg",
+	"seq",
+	"sha1sum",
+	"sha256sum",
+	"sha512sum",
+	"shasum",
 	"sort",
 	"stat",
+	"strings",
+	"tac",
 	"tail",
+	"test",
 	"tree",
 	"tr",
+	"true",
+	"type",
+	"uname",
 	"uniq",
+	"uptime",
 	"wc",
 	"whereis",
 	"which",
+	"whoami",
+	"xxd",
+	"zgrep",
 ]);
 
+// Shell control words that never mutate state on their own. Any command that
+// follows one of them is still validated recursively.
+const SHELL_CONTROL_WORDS = new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "time"]);
+const SHELL_BLOCK_WORDS = new Set(["done", "fi", "esac", "{", "}", "(", ")", ";;"]);
+const SHELL_WORD_LIST_KEYWORDS = new Set(["for", "select", "case"]);
+
 const READ_ONLY_GIT_SUBCOMMANDS = new Set([
+	"annotate",
 	"blame",
 	"cat-file",
+	"check-attr",
+	"check-ignore",
+	"count-objects",
 	"describe",
 	"diff",
+	"diff-index",
+	"diff-tree",
 	"for-each-ref",
 	"grep",
+	"help",
 	"log",
 	"ls-files",
+	"ls-remote",
 	"ls-tree",
+	"merge-base",
 	"name-rev",
+	"rev-list",
 	"rev-parse",
 	"shortlog",
 	"show",
 	"show-ref",
 	"status",
+	"var",
+	"version",
+	"whatchanged",
 ]);
+
+// Git subcommands that read only for a specific option/subcommand shape; every
+// other shape (create, delete, rename, set) is treated as mutating.
+const READ_ONLY_GIT_SUBCOMMAND_MODES: Record<
+	string,
+	{ options: ReadonlySet<string>; modes: ReadonlySet<string>; valueOptions?: ReadonlySet<string> }
+> = {
+	branch: {
+		options: new Set([
+			"-a",
+			"--all",
+			"-r",
+			"--remotes",
+			"-v",
+			"-vv",
+			"--verbose",
+			"-l",
+			"--list",
+			"--show-current",
+			"--merged",
+			"--no-merged",
+			"--contains",
+			"--no-contains",
+			"--points-at",
+			"--format",
+			"--sort",
+			"--color",
+			"--no-color",
+			"--column",
+			"-i",
+			"--ignore-case",
+		]),
+		modes: new Set(),
+		valueOptions: new Set([
+			"--merged",
+			"--no-merged",
+			"--contains",
+			"--no-contains",
+			"--points-at",
+			"--format",
+			"--sort",
+			"-l",
+			"--list",
+		]),
+	},
+	remote: { options: new Set(["-v", "--verbose"]), modes: new Set(["show", "get-url"]) },
+	tag: {
+		options: new Set(["-l", "--list", "-n", "--contains", "--no-contains", "--points-at", "--merged", "--sort", "--format"]),
+		modes: new Set(),
+		valueOptions: new Set([
+			"-l",
+			"--list",
+			"--contains",
+			"--no-contains",
+			"--points-at",
+			"--merged",
+			"--sort",
+			"--format",
+		]),
+	},
+	stash: { options: new Set([]), modes: new Set(["list", "show"]) },
+	worktree: { options: new Set([]), modes: new Set(["list"]) },
+	config: {
+		options: new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--global", "--local", "--show-origin"]),
+		modes: new Set(["get", "list"]),
+		valueOptions: new Set(["--get", "--get-all", "--get-regexp"]),
+	},
+	submodule: { options: new Set([]), modes: new Set(["status", "summary"]) },
+	notes: { options: new Set([]), modes: new Set(["list", "show"]) },
+};
+
+// curl options that make the request write somewhere (disk, remote mutation) or
+// leave the read-only realm.
+const MUTATING_CURL_OPTIONS = new Set([
+	"-o",
+	"--output",
+	"-O",
+	"--remote-name",
+	"--create-dirs",
+	"-T",
+	"--upload-file",
+	"-d",
+	"--data",
+	"--data-raw",
+	"--data-binary",
+	"--data-urlencode",
+	"--json",
+	"-F",
+	"--form",
+	"--form-string",
+	"-c",
+	"--cookie-jar",
+	"-D",
+	"--dump-header",
+	"--trace",
+	"--trace-ascii",
+	"-K",
+	"--config",
+]);
+
+const READ_ONLY_HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export interface ExplorationToolDescriptor {
 	name: string;
@@ -269,23 +433,32 @@ function parseShellPipeline(command: string): string[][] | undefined {
 			index = substitution.end;
 			continue;
 		}
-		if (character === "\n" || character === "\r") return undefined;
+		if (character === "\n" || character === "\r") {
+			if (!pushStage() && tokens.length > 0) return undefined;
+			trailingCommandSeparator = true;
+			continue;
+		}
 		if (character === "<") return undefined;
 		if (character === ">") {
 			if (command[index + 1] === ">") return undefined;
-			let targetStart = index + 1;
-			while (/\s/.test(command[targetStart] ?? "")) targetStart += 1;
-			const targetEnd = targetStart + "/dev/null".length;
-			if (command.slice(targetStart, targetEnd) !== "/dev/null") return undefined;
-			const following = command[targetEnd];
-			if (following !== undefined && !/[\s;&|]/.test(following)) return undefined;
+			const end = redirectTargetEnd(command, index + 1);
+			if (end === undefined) return undefined;
 			if (/^[0-9]+$/.test(token)) token = "";
 			else pushToken();
-			index = targetEnd - 1;
+			index = end - 1;
 			trailingCommandSeparator = false;
 			continue;
 		}
 		if (character === "&") {
+			if (command[index + 1] === ">") {
+				const offset = command[index + 2] === ">" ? undefined : index + 2;
+				const end = offset === undefined ? undefined : redirectTargetEnd(command, offset);
+				if (end === undefined) return undefined;
+				pushToken();
+				index = end - 1;
+				trailingCommandSeparator = false;
+				continue;
+			}
 			if (command[index + 1] !== "&" || !pushStage()) return undefined;
 			index += 1;
 			trailingCommandSeparator = false;
@@ -297,7 +470,8 @@ function parseShellPipeline(command: string): string[][] | undefined {
 			continue;
 		}
 		if (character === "|") {
-			if (command[index + 1] === "|" || !pushStage()) return undefined;
+			if (!pushStage()) return undefined;
+			if (command[index + 1] === "|") index += 1;
 			trailingCommandSeparator = false;
 			continue;
 		}
@@ -310,6 +484,19 @@ function parseShellPipeline(command: string): string[][] | undefined {
 	if (quote || escaped) return undefined;
 	if (!pushStage() && !trailingCommandSeparator) return undefined;
 	return stages;
+}
+
+// Accepts `/dev/null` and file-descriptor duplications (`&1`, `&2`) as the only
+// permitted redirect targets. Returns the index just past the target.
+function redirectTargetEnd(command: string, start: number): number | undefined {
+	let cursor = start;
+	while (/\s/.test(command[cursor] ?? "")) cursor += 1;
+	const duplication = /^&[0-9]+/.exec(command.slice(cursor));
+	const end = duplication ? cursor + duplication[0].length : cursor + "/dev/null".length;
+	if (!duplication && command.slice(cursor, end) !== "/dev/null") return undefined;
+	const following = command[end];
+	if (following !== undefined && !/[\s;&|<>\n\r]/.test(following)) return undefined;
+	return end;
 }
 
 function shellCommandName(token: string): string {
@@ -412,6 +599,54 @@ function isReadOnlyXargs(tokens: readonly string[]): boolean {
 	return index < tokens.length && isReadOnlyShellStage(tokens.slice(index));
 }
 
+// A curl invocation counts as exploration only when it is a plain GET/HEAD that
+// keeps its response on stdout.
+function isReadOnlyCurl(tokens: readonly string[]): boolean {
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index];
+		if (token === undefined) return false;
+		if (!token.startsWith("-")) continue;
+		const [flag] = token.split("=", 1);
+		if (flag !== undefined && MUTATING_CURL_OPTIONS.has(flag)) return false;
+		if (flag === "-X" || flag === "--request") {
+			const method = (token.includes("=") ? token.slice(token.indexOf("=") + 1) : tokens[index + 1]) ?? "";
+			if (!READ_ONLY_HTTP_METHODS.has(method.toUpperCase())) return false;
+			continue;
+		}
+		if (/^-[a-zA-Z]{2,}$/.test(token) && token.split("").some((character) => "oOTdFcDK".includes(character))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function isReadOnlyGitSubcommand(subcommand: string, args: readonly string[]): boolean {
+	const mode = READ_ONLY_GIT_SUBCOMMAND_MODES[subcommand];
+	if (!mode) return false;
+	let index = 0;
+	let modeMatched = false;
+	let pendingValues = 0;
+	if (args[0] !== undefined && !args[0].startsWith("-")) {
+		if (!mode.modes.has(args[0])) return false;
+		modeMatched = true;
+		index = 1;
+	}
+	for (; index < args.length; index += 1) {
+		const argument = args[index];
+		if (argument === undefined) return false;
+		if (!argument.startsWith("-")) {
+			if (modeMatched) continue;
+			if (pendingValues === 0) return false;
+			pendingValues -= 1;
+			continue;
+		}
+		const flag = argument.includes("=") ? argument.slice(0, argument.indexOf("=")) : argument;
+		if (!mode.options.has(flag)) return false;
+		if (!argument.includes("=") && mode.valueOptions?.has(flag)) pendingValues += 1;
+	}
+	return true;
+}
+
 function isReadOnlyGit(tokens: readonly string[]): boolean {
 	let index = 1;
 	while (index < tokens.length) {
@@ -428,8 +663,9 @@ function isReadOnlyGit(tokens: readonly string[]): boolean {
 		break;
 	}
 	const subcommand = tokens[index];
-	if (!subcommand || !READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) return false;
+	if (!subcommand) return false;
 	const options = tokens.slice(index + 1);
+	if (!READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) return isReadOnlyGitSubcommand(subcommand, options);
 	return ![
 		"--ext-diff",
 		"--output",
@@ -438,14 +674,64 @@ function isReadOnlyGit(tokens: readonly string[]): boolean {
 	].some((option) => hasOption(options, option));
 }
 
+// `cd` only moves the shell; anything beyond a single destination (or `-`) is
+// unusual enough to fall back to the mutating classification.
+function isReadOnlyCd(tokens: readonly string[]): boolean {
+	if (tokens.length > 1) return false;
+	const target = tokens[0];
+	return target === undefined || target === "-" || !target.startsWith("-");
+}
+
+// `env` is read-only while it only sets variables; if it launches a command,
+// that command decides.
+function isReadOnlyEnv(tokens: readonly string[]): boolean {
+	let index = 0;
+	while (index < tokens.length) {
+		const token = tokens[index];
+		if (token === undefined) return false;
+		if (token === "-" || token === "-i" || token === "--ignore-environment" || token === "-0" || token === "--null") {
+			index += 1;
+			continue;
+		}
+		if (token === "-u" || token === "--unset") {
+			index += 2;
+			continue;
+		}
+		if (token.startsWith("-")) return false;
+		if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) break;
+		index += 1;
+	}
+	return index >= tokens.length || isReadOnlyShellStage(tokens.slice(index));
+}
+
+// `awk` can write files (`print > "f"`), pipe into shells, and call `system()`,
+// so only programs free of those constructs count as read-only.
+function isReadOnlyAwk(tokens: readonly string[]): boolean {
+	return !tokens.some((token) => /system\s*\(|printf?\s*[^;]*[>|]|close\s*\(|[>|]\s*"/.test(token));
+}
+
+function isReadOnlyFd(tokens: readonly string[]): boolean {
+	return !tokens.some(
+		(token) => token === "-x" || token === "-X" || token.startsWith("--exec") || token.startsWith("--batch-size"),
+	);
+}
+
 function isReadOnlyShellStage(tokens: readonly string[]): boolean {
 	const command = tokens[0];
 	if (!command) return false;
+	if (SHELL_BLOCK_WORDS.has(command)) return tokens.length === 1 || isReadOnlyShellStage(tokens.slice(1));
+	if (SHELL_CONTROL_WORDS.has(command)) return tokens.length === 1 || isReadOnlyShellStage(tokens.slice(1));
+	if (SHELL_WORD_LIST_KEYWORDS.has(command)) return true;
 	const name = shellCommandName(command);
+	if (name === "cd") return isReadOnlyCd(tokens.slice(1));
+	if (name === "env") return isReadOnlyEnv(tokens.slice(1));
+	if (name === "awk" || name === "gawk" || name === "nawk") return isReadOnlyAwk(tokens.slice(1));
+	if (name === "fd" || name === "fdfind") return isReadOnlyFd(tokens.slice(1));
 	if (name === "find") return isReadOnlyFind(tokens.slice(1));
 	if (name === "sed") return isReadOnlySed(tokens.slice(1));
 	if (name === "xargs") return isReadOnlyXargs(tokens.slice(1));
 	if (name === "git") return isReadOnlyGit(tokens);
+	if (name === "curl") return isReadOnlyCurl(tokens.slice(1));
 	if (!READ_ONLY_SHELL_COMMANDS.has(name)) return false;
 	if (name === "rg" && tokens.slice(1).some((token) => token === "--pre" || token.startsWith("--pre="))) return false;
 	if (
