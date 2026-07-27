@@ -1,0 +1,42 @@
+{
+  "name": "pi-subdir-context",
+  "version": "0.1.0",
+  "description": "Path-scoped nested project context for Pi file tools",
+  "type": "module",
+  "main": "./src/index.ts",
+  "files": [
+    "src/",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "context",
+    "agents",
+    "skills"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "dependencies": {
+    "ignore": "^7.0.5",
+    "yaml": "^2.8.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@types/node": "^25.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
