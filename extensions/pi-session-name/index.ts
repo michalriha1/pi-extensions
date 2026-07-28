@@ -1,7 +1,7 @@
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { addSessionNameToTopBorder } from "./logic.ts";
 
-export default function sessionNameEditorExtension(pi: ExtensionAPI): void {
+export default function piSessionNameExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 

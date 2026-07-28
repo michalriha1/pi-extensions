@@ -6,7 +6,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { TerminalModes } from "./terminal-modes.ts";
 import { createViewportRuntime, type ViewportRuntime } from "./viewport-runtime.ts";
 
-const EXTENSION_ID = "pi-bottom-scroll";
+const EXTENSION_ID = "pi-sticky-input";
 const CAPTURE_WIDGET_KEY = `${EXTENSION_ID}:tui-capture`;
 
 export type AlternateScrollDirection = "up" | "down";

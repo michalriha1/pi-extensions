@@ -1,4 +1,4 @@
-# Pi Vitals Performance Plan
+# Pi Rich Footer Performance Plan
 
 ## Goals
 

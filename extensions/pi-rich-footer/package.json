@@ -1,5 +1,5 @@
 {
-  "name": "pi-vitals",
+  "name": "pi-rich-footer",
   "version": "1.2.2",
   "description": "A customizable powerline-style footer for pi",
   "type": "module",
@@ -16,12 +16,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mcowger/pi-vitals.git"
+    "url": "git+https://github.com/michalriha1/pi-extensions.git",
+    "directory": "extensions/pi-rich-footer"
   },
   "bugs": {
-    "url": "https://github.com/mcowger/pi-vitals/issues"
+    "url": "https://github.com/michalriha1/pi-extensions/issues"
   },
-  "homepage": "https://github.com/mcowger/pi-vitals#readme",
+  "homepage": "https://github.com/michalriha1/pi-extensions/tree/main/extensions/pi-rich-footer#readme",
   "keywords": [
     "pi",
     "extension",

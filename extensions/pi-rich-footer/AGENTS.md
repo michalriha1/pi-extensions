@@ -1,8 +1,8 @@
-# AGENTS.md — Pi Vitals
+# AGENTS.md — Pi Rich Footer
 
 ## Overview
 
-Pi Vitals is a customizable powerline-style footer extension for the [pi coding agent](https://github.com/mariozechner/pi-coding-agent). It replaces pi's built-in footer with a rich, configurable status bar showing git status, model info, token usage, context window percentage, and more.
+Pi Rich Footer is a customizable powerline-style footer extension for the [pi coding agent](https://github.com/mariozechner/pi-coding-agent). It replaces pi's built-in footer with a rich, configurable status bar showing git status, model info, token usage, context window percentage, and more.
 
 ## Architecture
 

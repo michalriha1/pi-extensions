@@ -104,7 +104,7 @@ async function completeFetch(
 }
 
 test("detects regular, linked-worktree, and bare/common repository names", () => {
-  const directory = mkdtempSync(join(tmpdir(), "pi-vitals-repos-"));
+  const directory = mkdtempSync(join(tmpdir(), "pi-rich-footer-repos-"));
   try {
     const regular = join(directory, "regular-repo");
     mkdirSync(join(regular, ".git"), { recursive: true });
@@ -322,7 +322,7 @@ test("prefers provider branch changes without consulting the HEAD fallback", () 
 });
 
 test("HEAD fallback is cached until explicit branch invalidation", () => {
-  const directory = mkdtempSync(join(tmpdir(), "pi-vitals-head-"));
+  const directory = mkdtempSync(join(tmpdir(), "pi-rich-footer-head-"));
   const headPath = join(directory, "HEAD");
   writeFileSync(headPath, "ref: refs/heads/main\n");
   const info: GitRepoInfo = { ...repo, headPath };

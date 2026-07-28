@@ -62,7 +62,7 @@ function metrics(): FooterRenderInstrumentation {
   return { segmentRenders: 0, layoutPasses: 0, widthPasses: 0, truncationPasses: 0, statusSorts: 0, finalRowAllocations: 0 };
 }
 
-console.log(`pi-vitals benchmark (${RENDERS.toLocaleString()} unchanged renders)`);
+console.log(`pi-rich-footer benchmark (${RENDERS.toLocaleString()} unchanged renders)`);
 console.log("entries\tcold snapshot ms\tcache-hit renders ms\tbranch scans\tlayouts\trow allocations");
 for (const size of SIZES) {
   const branch = makeBranch(size);

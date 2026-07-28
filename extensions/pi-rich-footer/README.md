@@ -1,4 +1,4 @@
-# Pi Vitals
+# Pi Rich Footer
 
 A customizable powerline-style footer for the pi coding agent. This extension provides a rich, informative status bar at the bottom of the terminal showing model info, git status, token usage, and more.
 
@@ -9,7 +9,7 @@ A customizable powerline-style footer for the pi coding agent. This extension pr
 - **Customizable segments**: Choose which info to display on the left and right sides
 - **Smart git paths**: Shows `[repo_name]/relative/path` inside git repos, with correct handling for worktrees
 - **Git integration**: Shows current branch and working tree status (staged, unstaged, untracked)
-- **Extension status passthrough**: Displays status from other pi extensions (e.g., thinking-steps) that would otherwise be hidden when pi-vitals replaces the built-in footer
+- **Extension status passthrough**: Displays status from other pi extensions (e.g., thinking-steps) that would otherwise be hidden when pi-rich-footer replaces the built-in footer
 - **Token tracking**: Display input/output/total tokens and cache read/write
 - **Context awareness**: Shows context window usage percentage
 - **Thinking level**: Visual indicator of model reasoning level
@@ -21,14 +21,14 @@ A customizable powerline-style footer for the pi coding agent. This extension pr
 Install from npm using pi:
 
 ```bash
-pi install npm:pi-vitals
+pi install npm:pi-rich-footer
 ```
 
 Or copy the extension files to your pi extensions directory manually:
 
 ```bash
 # Copy to global extensions directory
-cp -r . ~/.pi/agent/extensions/pi-vitals
+cp -r . ~/.pi/agent/extensions/pi-rich-footer
 
 # Or use directly for testing
 pi -e ./index.ts
@@ -140,7 +140,7 @@ The `path` segment adapts based on whether you're inside a git repo:
 
 ## Extension Status Passthrough
 
-When pi-vitals replaces the built-in footer, status text from other extensions (set via `ctx.ui.setStatus()`) would normally be hidden. The `ext_status` segment reads these statuses from pi's footer data provider and displays them inline. For example, the [thinking-steps](https://github.com/mcowger/pi-thinking-steps) plugin's "thinking: summary" status appears automatically.
+When pi-rich-footer replaces the built-in footer, status text from other extensions (set via `ctx.ui.setStatus()`) would normally be hidden. The `ext_status` segment reads these statuses from pi's footer data provider and displays them inline. For example, the [thinking-steps](https://github.com/mcowger/pi-thinking-steps) plugin's "thinking: summary" status appears automatically.
 
 ## Git Status Indicators
 

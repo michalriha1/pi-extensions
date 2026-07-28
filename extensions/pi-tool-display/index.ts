@@ -9,7 +9,7 @@ function getActiveTheme(): Theme | undefined {
 	return (globalThis as Record<symbol, Theme | undefined>)[ACTIVE_THEME_KEY];
 }
 
-export default function toolCallGroupingExtension(pi: ExtensionAPI): void {
+export default function piToolDisplayExtension(pi: ExtensionAPI): void {
 	let currentTheme: Theme | undefined;
 	let patch: ReturnType<typeof installToolCallGroupingPatch> | undefined;
 	let cancelActiveSelection: (() => void) | undefined;
