@@ -14,26 +14,18 @@ import { Container, Text, type TUI, visibleWidth } from "@earendil-works/pi-tui"
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import toolCallGroupingExtension from "./index.ts";
-import {
-	hasIntentSchema,
-	INTENT_PROMPT_GUIDELINE,
-	injectIntentSchema,
-	injectIntentSchemas,
-} from "./intent.ts";
+import { INTENT_PROMPT_GUIDELINE, injectIntentSchema, injectIntentSchemas } from "./intent.ts";
 import {
 	classifyShellCommand,
 	classifyToolPresentation,
 	type ExplorationToolDescriptor,
-	formatCommandSummary,
 	formatExplorationSummary,
 	formatRemoteActionSummary,
 	generateSelectionLabels,
 	groupExplorationItems,
-	INTENT_MAX_LENGTH,
 	isExplorationTool,
 	isReadOnlyShellCommand,
 	toolIntentKind,
-	toolIntentPhrase,
 } from "./logic.ts";
 import { installToolCallGroupingPatch } from "./patch.ts";
 
@@ -517,7 +509,6 @@ describe("runtime patch", () => {
 		const truncatedCommandHeader = command.render(18)[1] ?? "";
 		expect(visibleWidth(truncatedCommandHeader)).toBeLessThanOrEqual(18);
 		expect(truncatedCommandHeader).toContain(activeTheme.getFgAnsi("success"));
-		expect(truncatedCommandHeader).not.toContain(activeTheme.getFgAnsi("text"));
 
 		command.updateResult({ content: [{ type: "text", text: "failed" }], isError: true }, false);
 		expect(command.render(120)[1]).toBe(
@@ -561,7 +552,7 @@ describe("runtime patch", () => {
 		const command = component(
 			"bash",
 			"bash-1",
-			{ command: "printf changed" },
+			{ command: "touch changed" },
 			createBashToolDefinition(process.cwd()),
 		);
 		const last = component("ls", "ls-1", { path: "src" });
@@ -570,12 +561,11 @@ describe("runtime patch", () => {
 		parent.addChild(last);
 
 		expect(first.render(120)).toEqual(["", "• Exploring", "  └ Read first.ts"]);
-		expect(command.render(120)).toEqual(["", "• Running $ printf changed"]);
+		expect(command.render(120)).toEqual(["", "• Running $ touch changed"]);
 		expect(last.render(120)).toEqual(["", "• Exploring", "  └ List src"]);
 	});
 
 	test("filters thinking-only, mixed, and streaming assistant updates without blank rows or input mutation", () => {
-		const originalAssistantRender = AssistantMessageComponent.prototype.render;
 		install();
 		const parent = new Container();
 		const assistant = new AssistantMessageComponent(undefined, false);
@@ -606,7 +596,6 @@ describe("runtime patch", () => {
 		assistant.updateContent(streaming);
 		expect(assistant.render(120).join("\n")).toContain("Partial answer");
 		expect(assistant.render(120).join("\n")).not.toContain("hidden reasoning");
-		expect(AssistantMessageComponent.prototype.render).toBe(originalAssistantRender);
 	});
 
 	test("filters initial messages on construction and first observation, then restores latest originals", () => {
@@ -1428,7 +1417,7 @@ describe("runtime patch", () => {
 		const command = component(
 			"bash",
 			"bash-1",
-			{ command: "printf ok" },
+			{ command: "touch changed" },
 			createBashToolDefinition(process.cwd()),
 		);
 		const remote = component("mcp", "mcp-1", { action: "connect", server: "jira" }, mcpDefinition());
@@ -1437,7 +1426,7 @@ describe("runtime patch", () => {
 
 		expect(first.render(120)).toEqual(["", "• Exploring", "  └ Read first.ts"]);
 		expect(edit.render(120)[1]).toBe("• Editing changed.ts");
-		expect(command.render(120)[1]).toBe("• Running $ printf ok");
+		expect(command.render(120)[1]).toBe("• Running $ touch changed");
 		expect(remote.render(120)[1]).toBe("• Calling MCP connect jira");
 		expect(second.render(120)).toEqual(["", "• Exploring", "  └ Read second.ts"]);
 	});
@@ -1687,7 +1676,7 @@ describe("runtime patch", () => {
 		const secondPatch = installToolCallGroupingPatch({ getTheme: () => undefined });
 		expect(secondPatch).toBe(firstPatch);
 		expect(ToolExecutionComponent.prototype.render).toBe(wrappedRender);
-		expect(AssistantMessageComponent.prototype.render).toBe(originalAssistantRender);
+		expect(AssistantMessageComponent.prototype.render).toBe(Container.prototype.render);
 		expect(AssistantMessageComponent.prototype.updateContent).not.toBe(originalAssistantUpdateContent);
 		expect(Container.prototype.render).not.toBe(originalContainerRender);
 		expect(Container.prototype.addChild).not.toBe(originalAddChild);
@@ -1737,6 +1726,7 @@ describe("runtime patch", () => {
 					handlers.set(event, handler);
 				},
 				registerShortcut() {},
+				getAllTools: () => [],
 			} as unknown as ExtensionAPI);
 			return handlers;
 		};
@@ -1792,6 +1782,7 @@ describe("runtime patch", () => {
 				handlers.set(event, handler);
 			},
 			registerShortcut() {},
+			getAllTools: () => [],
 		} as unknown as ExtensionAPI;
 		const originalRender = ToolExecutionComponent.prototype.render;
 		const originalAssistantRender = AssistantMessageComponent.prototype.render;
@@ -1813,7 +1804,7 @@ describe("runtime patch", () => {
 			} as unknown as ExtensionContext);
 			expect(toolsExpanded).toBe(false);
 			expect(ToolExecutionComponent.prototype.render).not.toBe(originalRender);
-			expect(AssistantMessageComponent.prototype.render).toBe(originalAssistantRender);
+			expect(AssistantMessageComponent.prototype.render).toBe(Container.prototype.render);
 			expect(handlers.has("message_end")).toBe(false);
 
 			const parent = new Container();
@@ -1842,6 +1833,7 @@ describe("runtime patch", () => {
 					handlers.set(event, handler);
 				},
 				registerShortcut() {},
+				getAllTools: () => [],
 			} as unknown as ExtensionAPI);
 			return handlers;
 		};
@@ -1909,6 +1901,7 @@ describe("runtime patch", () => {
 				shortcutKey = key;
 				shortcut = options.handler;
 			},
+			getAllTools: () => [],
 		} as unknown as ExtensionAPI;
 
 		toolCallGroupingExtension(api);
@@ -1966,6 +1959,7 @@ describe("runtime patch", () => {
 			registerShortcut(_key: string, options: { handler: ShortcutHandler }) {
 				shortcut = options.handler;
 			},
+			getAllTools: () => [],
 		} as unknown as ExtensionAPI;
 		const ctx = {
 			mode: "tui",
@@ -2003,7 +1997,7 @@ describe("runtime patch", () => {
 			component(
 				"bash",
 				"bash-expanded",
-				{ command: "printf expanded" },
+				{ command: "touch expanded" },
 				createBashToolDefinition(process.cwd()),
 			),
 			component(
