@@ -2,6 +2,10 @@ export const EXPLORATION_BUILT_INS = new Set(["read", "grep", "find", "ls"]);
 
 /** Model-written field injected into owned tool schemas by `intent.ts`. */
 export const INTENT_KIND_FIELD = "intentKind";
+export const INTENT_TEXT_FIELD = "intentText";
+export const INTENT_GROUP_FIELD = "intentGroup";
+export const INTENT_GROUP_TEXT_FIELD = "intentGroupText";
+export const INTENT_COMMAND_CHARACTER_LIMIT = 20;
 export const INTENT_KINDS = ["explore", "modify"] as const;
 export type IntentKind = (typeof INTENT_KINDS)[number];
 
@@ -348,9 +352,16 @@ export interface ExplorationToolDescriptor {
 
 export type ToolPresentationKind = "exploration" | "mutation" | "command" | "remote" | "original";
 
+export interface BashDisplayIntent {
+	text: string;
+	group?: string;
+	groupText?: string;
+}
+
 export interface ExplorationGroupItem {
 	id: string;
 	exploration: boolean;
+	breakBefore?: boolean;
 }
 
 export interface ExplorationGroup {
@@ -1075,8 +1086,31 @@ export function formatMutationStatistics(tool: ExplorationToolDescriptor, detail
 	return statistics ? `+${statistics.added} -${statistics.removed} lines` : undefined;
 }
 
-export function formatCommandSummary(tool: ExplorationToolDescriptor): string {
-	return `$ ${stringArg(tool.args, ["command"]) ?? "…"}`;
+export function bashDisplayIntent(tool: ExplorationToolDescriptor): BashDisplayIntent | undefined {
+	if (!SHELL_TOOL_NAMES.has(tool.name.toLowerCase())) return undefined;
+	const text = stringArg(tool.args, [INTENT_TEXT_FIELD]);
+	if (!text) return undefined;
+	const group = stringArg(tool.args, [INTENT_GROUP_FIELD]);
+	const groupText = stringArg(tool.args, [INTENT_GROUP_TEXT_FIELD]);
+	return { text, ...(group ? { group } : {}), ...(groupText ? { groupText } : {}) };
+}
+
+export function formatCommandSummary(tool: ExplorationToolDescriptor, maxCommandCharacters?: number): string {
+	const command = stringArg(tool.args, ["command"]) ?? "…";
+	if (maxCommandCharacters === undefined) return `$ ${command}`;
+	const characters = Array.from(command);
+	const truncated = characters.length > maxCommandCharacters
+		? `${characters.slice(0, maxCommandCharacters).join("")}…`
+		: command;
+	return `$ ${truncated}`;
+}
+
+export function formatIntentCommandSummary(
+	tool: ExplorationToolDescriptor,
+	maxCommandCharacters?: number,
+): string | undefined {
+	const intent = bashDisplayIntent(tool);
+	return intent ? `${intent.text} · ${formatCommandSummary(tool, maxCommandCharacters)}` : undefined;
 }
 
 export function formatRemoteActionSummary(tool: ExplorationToolDescriptor): string {
@@ -1098,7 +1132,9 @@ export function formatExplorationSummary(tool: ExplorationToolDescriptor): strin
 		return `Find ${stringArg(tool.args, ["pattern", "query", "name"]) ?? "…"}${locationSuffix(tool.args)}`;
 	}
 	if (name === "ls") return `List ${stringArg(tool.args, ["path", "directory"]) ?? "."}`;
-	if (SHELL_TOOL_NAMES.has(name)) return `$ ${stringArg(tool.args, ["command"]) ?? "…"}`;
+	if (SHELL_TOOL_NAMES.has(name)) {
+		return formatIntentCommandSummary(tool, INTENT_COMMAND_CHARACTER_LIMIT) ?? formatCommandSummary(tool);
+	}
 	if (name === "mcp") return formatMcp(tool.args);
 	if (name === "web_search") return formatWebSearch(tool.args);
 	if (name === "fetch_content") return formatFetchContent(tool.args);
@@ -1122,7 +1158,7 @@ export function groupExplorationItems(items: readonly ExplorationGroupItem[]): E
 			current = undefined;
 			continue;
 		}
-		if (!current) {
+		if (!current || item.breakBefore === true) {
 			current = { items: [] };
 			groups.push(current);
 		}

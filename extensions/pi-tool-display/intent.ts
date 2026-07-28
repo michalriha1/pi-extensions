@@ -1,4 +1,10 @@
-import { INTENT_KIND_FIELD, INTENT_KINDS } from "./logic.ts";
+import {
+	INTENT_GROUP_FIELD,
+	INTENT_GROUP_TEXT_FIELD,
+	INTENT_KIND_FIELD,
+	INTENT_KINDS,
+	INTENT_TEXT_FIELD,
+} from "./logic.ts";
 
 /**
  * Tools whose parameter schema gains the intent field.
@@ -15,13 +21,31 @@ export const INTENT_TOOL_NAMES: readonly string[] = ["bash"];
  * Pi cannot attach `promptGuidelines` to tools this extension does not own, so
  * the guidance is chained onto the turn's system prompt instead.
  */
-export const INTENT_PROMPT_GUIDELINE = `Set \`${INTENT_KIND_FIELD}\` on every tool call that declares it: "explore" when the call only inspects state, "modify" when it changes state or has any other side effect, and "modify" when unsure.`;
+export const INTENT_PROMPT_GUIDELINE = `Set \`${INTENT_KIND_FIELD}\` on every tool call that declares it: "explore" when the call only inspects state, "modify" when it changes state or has any other side effect, and "modify" when unsure. For every bash call, set \`${INTENT_TEXT_FIELD}\` to a concise neutral action phrase such as "Inspect repository status" or "Copy URL to clipboard". When two or more consecutive modifying bash calls serve one goal, also set the same short machine identifier in \`${INTENT_GROUP_FIELD}\` and the same neutral goal phrase in \`${INTENT_GROUP_TEXT_FIELD}\` on every call; keep \`${INTENT_TEXT_FIELD}\` specific to each command. Do not set group fields on exploration calls.`;
 
 const INTENT_KIND_SCHEMA = {
 	type: "string",
 	enum: [...INTENT_KINDS],
 	description:
 		'Whether this call only inspects state ("explore") or changes it ("modify"). Used for transcript grouping. Use "modify" when unsure.',
+} as const;
+
+const INTENT_TEXT_SCHEMAS = {
+	[INTENT_TEXT_FIELD]: {
+		type: "string",
+		description:
+			'Concise neutral action phrase for a bash call, for example "Inspect repository status" or "Copy URL to clipboard".',
+	},
+	[INTENT_GROUP_FIELD]: {
+		type: "string",
+		description:
+			"Short shared machine identifier for consecutive modifying bash calls with one goal.",
+	},
+	[INTENT_GROUP_TEXT_FIELD]: {
+		type: "string",
+		description:
+			"Concise neutral heading shared by every modifying bash call in the same intent group.",
+	},
 } as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -41,7 +65,11 @@ export function injectIntentSchema(parameters: unknown): boolean {
 	if (!isRecord(parameters) || parameters.type !== "object") return false;
 	const properties = parameters.properties;
 	if (!isRecord(properties)) return false;
-	if (!(INTENT_KIND_FIELD in properties)) properties[INTENT_KIND_FIELD] = { ...INTENT_KIND_SCHEMA };
+	if (!(INTENT_KIND_FIELD in properties))
+		properties[INTENT_KIND_FIELD] = { ...INTENT_KIND_SCHEMA };
+	for (const [field, schema] of Object.entries(INTENT_TEXT_SCHEMAS)) {
+		if (!(field in properties)) properties[field] = { ...schema };
+	}
 	return true;
 }
 

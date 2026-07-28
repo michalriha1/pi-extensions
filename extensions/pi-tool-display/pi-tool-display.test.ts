@@ -9,17 +9,20 @@ import {
 	type Theme,
 	type ToolDefinition,
 	ToolExecutionComponent,
+	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import toolCallGroupingExtension from "./index.ts";
+import piToolDisplayExtension from "./index.ts";
 import { INTENT_PROMPT_GUIDELINE, injectIntentSchema, injectIntentSchemas } from "./intent.ts";
 import {
+	bashDisplayIntent,
 	classifyShellCommand,
 	classifyToolPresentation,
 	type ExplorationToolDescriptor,
 	formatExplorationSummary,
+	formatIntentCommandSummary,
 	formatRemoteActionSummary,
 	generateSelectionLabels,
 	groupExplorationItems,
@@ -130,14 +133,14 @@ describe("exploration classification", () => {
 		"git log --oneline -10",
 		"git blame -L 195,220 CampaignManager.cs; git show $(git log --all -S'normalizedKeywords' --format='%H' -- CampaignManager.cs | tail -1) -- CampaignManager.cs | head -220",
 		"git show \"$(git log -1 --format='%H')\" -- README.md",
-		"realpath .pi/extensions/tool-call-grouping/logic.ts",
+		"realpath .pi/extensions/pi-tool-display/logic.ts",
 		"diff -q logic.ts ../logic.ts && git diff --check && git diff --stat",
 		"ls -la node_modules/vitest 2>/dev/null; find node_modules -path '*/vitest/dist/cli.js' -print | head",
 		"find . -iname '*tool-call-group*' | head -50 && rg -n 'tool-call-group' .pi packages 2>/dev/null | head -200",
 		"find ~/.pi -type f -maxdepth 5 2> /dev/null | rg 'tool-call|group'",
 		"sed -n '1,20p' README.md",
-		"wc -l .pi/extensions/tool-call-grouping/*.ts; find .pi/extensions/tool-call-grouping -name '*.json'",
-		"find . -iname '*tool*call*group*' -o -path '*tool-call-grouping*'; find ../codex -maxdepth 2 -type f | head -80; git status --short",
+		"wc -l .pi/extensions/pi-tool-display/*.ts; find .pi/extensions/pi-tool-display -name '*.json'",
+		"find . -iname '*tool*call*group*' -o -path '*pi-tool-display*'; find ../codex -maxdepth 2 -type f | head -80; git status --short",
 		'rg -n "decodeTextSignature|parseTextSignature|TextSignatureV1|textSignature" packages/ai/src | head -100; rg -n "textSignature" packages/coding-agent/src | head -80',
 		"find ../codex/codex-rs/tui/src -path '*snapshots*' -type f | xargs rg -L 'Running|Ran|Explored|Edited|Added|Deleted' | head -40",
 		"find . -type f -print0 | xargs -0 rg needle | head -40",
@@ -279,7 +282,17 @@ describe("exploration classification", () => {
 		expect(toolIntentKind(undefined)).toBeUndefined();
 	});
 
-	test("leaves deterministic summaries untouched", () => {
+	test("uses exploration intent text and limits its command summary", () => {
+		expect(
+			formatExplorationSummary({
+				name: "bash",
+				args: {
+					command: "1234567890123456789012345",
+					intentKind: "explore",
+					intentText: "Inspect repository status",
+				},
+			}),
+		).toBe("Inspect repository status · $ 12345678901234567890…");
 		expect(formatExplorationSummary({ name: "bash", args: { command: "git status", intentKind: "explore" } })).toBe(
 			"$ git status",
 		);
@@ -291,6 +304,9 @@ describe("exploration classification", () => {
 		expect(injectIntentSchema(parameters)).toBe(true);
 		const properties = parameters.properties as Record<string, Record<string, unknown>>;
 		expect(properties.intentKind?.enum).toEqual(["explore", "modify"]);
+		expect(properties.intentText?.type).toBe("string");
+		expect(properties.intentGroup?.type).toBe("string");
+		expect(properties.intentGroupText?.type).toBe("string");
 		expect(parameters.required).toEqual(["command"]);
 		expect(injectIntentSchema(parameters)).toBe(true);
 		expect(injectIntentSchema(Type.String())).toBe(false);
@@ -314,6 +330,8 @@ describe("exploration classification", () => {
 	test("describes the intent field in the prompt guideline", () => {
 		expect(INTENT_PROMPT_GUIDELINE).toContain("intentKind");
 		expect(INTENT_PROMPT_GUIDELINE).toContain("explore");
+		expect(INTENT_PROMPT_GUIDELINE).toContain("intentText");
+		expect(INTENT_PROMPT_GUIDELINE).toContain("intentGroupText");
 		expect(INTENT_PROMPT_GUIDELINE.split("\n")).toHaveLength(1);
 	});
 
@@ -387,6 +405,39 @@ describe("exploration summaries", () => {
 	});
 });
 
+describe("bash intent summaries", () => {
+	test("reads clean intent fields for modifying and exploration calls", () => {
+		const tool = {
+			name: "bash",
+			args: {
+				command: "git push",
+				intentKind: "modify",
+				intentText: "Push branch",
+				intentGroup: "submit-git",
+				intentGroupText: "Submit changes to git",
+			},
+		};
+		expect(bashDisplayIntent(tool)).toEqual({
+			text: "Push branch",
+			group: "submit-git",
+			groupText: "Submit changes to git",
+		});
+		expect(formatIntentCommandSummary(tool)).toBe("Push branch · $ git push");
+		expect(formatIntentCommandSummary({ ...tool, args: { ...tool.args, intentKind: "explore" } })).toBe(
+			"Push branch · $ git push",
+		);
+	});
+
+	test("limits only standalone bash command text to twenty characters", () => {
+		expect(
+			formatIntentCommandSummary({
+				name: "bash",
+				args: { command: "1234567890123456789012345", intentKind: "modify", intentText: "Copy URL" },
+			}, 20),
+		).toBe("Copy URL · $ 12345678901234567890…");
+	});
+});
+
 describe("remote action summaries", () => {
 	test("includes the Agent description", () => {
 		expect(
@@ -455,6 +506,68 @@ describe("runtime patch", () => {
 		expect(read.render(120)[1]).toBe("• Explored");
 	});
 
+	test("keeps a streamed bash call visible when it becomes exploration", () => {
+		install();
+		const parent = new Container();
+		const previous = component("read", "read-before-bash", { path: "previous.ts" });
+		parent.addChild(previous);
+		previous.updateResult({ content: [{ type: "text", text: "previous" }], isError: false }, false);
+		const command = component(
+			"bash",
+			"streamed-bash",
+			{ command: "sleep 4; pwd" },
+			createBashToolDefinition(process.cwd()),
+		);
+		parent.addChild(command);
+		expect(command.render(120)[1]).toContain("Running");
+
+		command.updateArgs({
+			command: "sleep 4; pwd",
+			intentKind: "explore",
+			intentText: "Wait and print working directory",
+		});
+		expect(command.render(120)).toEqual([
+			"",
+			"• Exploring",
+			"  └ Wait and print working directory · $ sleep 4; pwd",
+		]);
+		command.updateResult({ content: [{ type: "text", text: "cwd" }], isError: false }, false);
+		parent.addChild(thinkingComponent("next", "read", "Done."));
+		expect(command.render(120)).toEqual([
+			"",
+			"• Explored",
+			"  └ Wait and print working directory · $ sleep 4; pwd",
+		]);
+	});
+
+	test("renders exploration bash intent with a limited command summary", () => {
+		install();
+		const parent = new Container();
+		const command = component(
+			"bash",
+			"bash-explore-intent",
+			{
+				command: "1234567890123456789012345",
+				intentKind: "explore",
+				intentText: "Inspect repository status",
+			},
+			createBashToolDefinition(process.cwd()),
+		);
+		parent.addChild(command);
+
+		expect(command.render(120)).toEqual([
+			"",
+			"• Exploring",
+			"  └ Inspect repository status · $ 12345678901234567890…",
+		]);
+		command.updateResult({ content: [{ type: "text", text: "clean" }], isError: false }, false);
+		expect(command.render(120)).toEqual([
+			"",
+			"• Explored",
+			"  └ Inspect repository status · $ 12345678901234567890…",
+		]);
+	});
+
 	test("uses distinct lifecycle colors for pending, completed, and failed headers", () => {
 		activePatch = installToolCallGroupingPatch({ getTheme: () => activeTheme });
 		expect(activePatch.installed).toBe(true);
@@ -516,7 +629,7 @@ describe("runtime patch", () => {
 		);
 	});
 
-	test("groups exploration tools across assistant prose, tool-call content, and unrelated TUI rows", () => {
+	test("uses visible assistant prose as an exploration boundary during replay", () => {
 		install();
 		const parent = new Container();
 		const first = component("read", "read-1", { path: "first.ts" });
@@ -534,15 +647,30 @@ describe("runtime patch", () => {
 		parent.addChild(new Text("status", 0, 0));
 		parent.addChild(last);
 
-		expect(first.render(120)).toEqual([
+		expect(first.render(120)).toEqual(["", "• Exploring", "  └ Read first.ts"]);
+		expect(shell.render(120)).toEqual([
 			"",
 			"• Exploring",
-			"  ├ Read first.ts",
 			"  ├ $ git status --short",
 			"  └ Find *.ts",
 		]);
-		expect(shell.render(120)).toEqual([]);
 		expect(last.render(120)).toEqual([]);
+	});
+
+	test("uses user messages as exploration boundaries when adopting old sessions", () => {
+		const parent = new Container();
+		const first = component("read", "old-read-1", { path: "first.ts" });
+		const last = component("read", "old-read-2", { path: "last.ts" });
+		first.updateResult({ content: [{ type: "text", text: "first" }], isError: false }, false);
+		last.updateResult({ content: [{ type: "text", text: "last" }], isError: false }, false);
+		parent.addChild(first);
+		parent.addChild(new UserMessageComponent("Continue."));
+		parent.addChild(last);
+
+		install();
+		parent.render(120);
+		expect(first.render(120)).toEqual(["", "• Explored", "  └ Read first.ts"]);
+		expect(last.render(120)).toEqual(["", "• Explored", "  └ Read last.ts"]);
 	});
 
 	test("uses an actual non-exploration tool as an exploration boundary", () => {
@@ -1322,6 +1450,78 @@ describe("runtime patch", () => {
 		]);
 	});
 
+	test("renders standalone bash intent on one line without result output", () => {
+		install();
+		const parent = new Container();
+		const command = component(
+			"bash",
+			"bash-intent",
+			{
+				command: "1234567890123456789012345",
+				intentKind: "modify",
+				intentText: "Copy URL to clipboard",
+			},
+			createBashToolDefinition(process.cwd()),
+		);
+		parent.addChild(command);
+
+		expect(command.render(120)).toEqual([
+			"",
+			"• Running — Copy URL to clipboard · $ 12345678901234567890…",
+		]);
+		command.updateResult({ content: [{ type: "text", text: "copied" }], isError: false }, false);
+		expect(command.render(120)).toEqual([
+			"",
+			"• Ran — Copy URL to clipboard · $ 12345678901234567890…",
+		]);
+		command.updateResult({ content: [{ type: "text", text: "clipboard unavailable" }], isError: true }, false);
+		expect(command.render(120)).toEqual([
+			"",
+			"• Failed — Copy URL to clipboard · $ 12345678901234567890…",
+		]);
+	});
+
+	test("groups consecutive bash calls by shared intent and keeps failures inside", () => {
+		install();
+		const parent = new Container();
+		const calls = [
+			["git reset --soft HEAD~1", "Reset previous commit"],
+			["git commit -m submit", "Commit changes"],
+			["git push", "Push branch"],
+		].map(([command, intentText], index) =>
+			component(
+				"bash",
+				`git-${index}`,
+				{
+					command,
+					intentKind: "modify",
+					intentText,
+					intentGroup: "submit-git",
+					intentGroupText: "Submit changes to git",
+				},
+				createBashToolDefinition(process.cwd()),
+			),
+		);
+		for (const call of calls) parent.addChild(call);
+
+		expect(calls[0]?.render(120)).toEqual([
+			"",
+			"• Running — Submit changes to git",
+			"  ├ Reset previous commit · $ git reset --soft HEAD~1",
+			"  ├ Commit changes · $ git commit -m submit",
+			"  └ Push branch · $ git push",
+		]);
+		expect(calls[1]?.render(120)).toEqual([]);
+		for (const call of calls) {
+			call.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+		}
+		expect(calls[0]?.render(120)[1]).toBe("• Ran — Submit changes to git");
+		calls[1]?.updateResult({ content: [{ type: "text", text: "rejected" }], isError: true }, false);
+		expect(calls[0]?.render(120)[1]).toBe("• Failed — Submit changes to git");
+		expect(calls[0]?.render(120).join("\n")).not.toContain("rejected");
+		expect(calls[1]?.render(120)).toEqual([]);
+	});
+
 	test("renders remote MCP and custom actions individually through their lifecycle", () => {
 		install();
 		const parent = new Container();
@@ -1721,7 +1921,7 @@ describe("runtime patch", () => {
 		type Handler = (event: unknown, ctx: ExtensionContext) => void | Promise<void>;
 		const loadExtension = () => {
 			const handlers = new Map<string, Handler>();
-			toolCallGroupingExtension({
+			piToolDisplayExtension({
 				on(event: string, handler: Handler) {
 					handlers.set(event, handler);
 				},
@@ -1788,7 +1988,7 @@ describe("runtime patch", () => {
 		const originalAssistantRender = AssistantMessageComponent.prototype.render;
 		let toolsExpanded: boolean | undefined;
 
-		toolCallGroupingExtension(api);
+		piToolDisplayExtension(api);
 		try {
 			const start = handlers.get("session_start");
 			expect(start).toBeDefined();
@@ -1828,7 +2028,7 @@ describe("runtime patch", () => {
 		const originalRender = ToolExecutionComponent.prototype.render;
 		const loadExtension = () => {
 			const handlers = new Map<string, Handler>();
-			toolCallGroupingExtension({
+			piToolDisplayExtension({
 				on(event: string, handler: Handler) {
 					handlers.set(event, handler);
 				},
@@ -1904,7 +2104,7 @@ describe("runtime patch", () => {
 			getAllTools: () => [],
 		} as unknown as ExtensionAPI;
 
-		toolCallGroupingExtension(api);
+		piToolDisplayExtension(api);
 		const ctx = {
 			mode: "tui",
 			ui: {
@@ -1976,7 +2176,7 @@ describe("runtime patch", () => {
 			},
 		} as unknown as ExtensionContext;
 
-		toolCallGroupingExtension(api);
+		piToolDisplayExtension(api);
 		await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
 		const parent = new Container();
 		parent.addChild(component("read", "read-1", { path: "first.ts" }));

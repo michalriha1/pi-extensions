@@ -1,21 +1,29 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { AssistantMessageComponent, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import {
+	AssistantMessageComponent,
+	ToolExecutionComponent,
+	UserMessageComponent,
+} from "@earendil-works/pi-coding-agent";
 import { Container, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+	bashDisplayIntent,
 	classifyToolPresentation,
+	type ExplorationGroupItem,
 	type ExplorationToolDescriptor,
 	formatCommandSummary,
 	formatExplorationSummary,
+	formatIntentCommandSummary,
 	formatMutationStatistics,
 	formatMutationTarget,
 	formatRemoteActionSummary,
 	generateSelectionLabels,
+	INTENT_COMMAND_CHARACTER_LIMIT,
 	groupExplorationItems,
 	isExplorationTool,
 } from "./logic.ts";
 
-const PATCH_KEY = Symbol.for("pi.tool-call-grouping.patch.v7");
+const PATCH_KEY = Symbol.for("pi.tool-display.patch.v9");
 const ACTIVE_THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
 
 interface RuntimeToolDefinition {
@@ -66,9 +74,10 @@ interface DescriptorCacheEntry {
 }
 
 interface RuntimeGroup {
-	kind: "exploration" | "mutation" | "remote";
+	kind: "exploration" | "mutation" | "command-intent" | "remote";
 	members: GroupMember[];
 	stable: boolean;
+	heading?: string;
 }
 
 interface RuntimeMembership {
@@ -112,6 +121,7 @@ interface PatchOptions {
 	getTheme: () => Theme | undefined;
 	toolClass?: typeof ToolExecutionComponent;
 	assistantClass?: typeof AssistantMessageComponent;
+	userClass?: typeof UserMessageComponent;
 	containerClass?: typeof Container;
 	onParentRebuild?: (parent: object) => void;
 	onCompactTextOutputNormalize?: () => void;
@@ -245,12 +255,14 @@ class GroupingRuntime {
 	private componentParents = new WeakMap<object, object>();
 	private descriptorCache = new WeakMap<object, DescriptorCacheEntry>();
 	private normalizedOutputCache = new WeakMap<RuntimeToolResult, Map<number, string[]>>();
+	private explorationBreaks = new WeakSet<object>();
 	private groupRowsCache = new WeakMap<RuntimeGroup, Map<Theme | undefined, Map<number, Map<object, string[]>>>>();
 	private componentRowsCache = new WeakMap<object, Map<Theme | undefined, Map<number, string[]>>>();
 	private selectionLabels = new Map<object, string>();
 	private assistantContentStates = new Map<object, AssistantContentState>();
 	private adoptedParents = new WeakSet<object>();
 	private readonly updateAssistantContent: UpdateAssistantContentMethod;
+	private readonly userClass: typeof UserMessageComponent;
 	private readonly getTheme: () => Theme | undefined;
 	private readonly onParentRebuild: ((parent: object) => void) | undefined;
 	private readonly onCompactTextOutputNormalize: (() => void) | undefined;
@@ -262,12 +274,14 @@ class GroupingRuntime {
 	constructor(
 		getTheme: () => Theme | undefined,
 		updateAssistantContent: UpdateAssistantContentMethod,
+		userClass: typeof UserMessageComponent,
 		onParentRebuild?: (parent: object) => void,
 		onCompactTextOutputNormalize?: () => void,
 		onCustomRowsCompute?: (target: object) => void,
 	) {
 		this.getTheme = getTheme;
 		this.updateAssistantContent = updateAssistantContent;
+		this.userClass = userClass;
 		this.onParentRebuild = onParentRebuild;
 		this.onCompactTextOutputNormalize = onCompactTextOutputNormalize;
 		this.onCustomRowsCompute = onCustomRowsCompute;
@@ -280,6 +294,7 @@ class GroupingRuntime {
 		this.componentParents = new WeakMap();
 		this.descriptorCache = new WeakMap();
 		this.normalizedOutputCache = new WeakMap();
+		this.explorationBreaks = new WeakSet();
 		this.groupRowsCache = new WeakMap();
 		this.componentRowsCache = new WeakMap();
 		this.adoptedParents = new WeakSet();
@@ -502,7 +517,7 @@ class GroupingRuntime {
 	private computeGroupRows(group: RuntimeGroup, width: number, theme: Theme | undefined): Map<object, string[]> {
 		this.onCustomRowsCompute?.(group);
 		const rows = new Map<object, string[]>(group.members.map((member) => [member.component, []]));
-		if (group.kind === "exploration") {
+		if (group.kind === "exploration" || group.kind === "command-intent") {
 			let start = 0;
 			while (start < group.members.length) {
 				while ((group.members[start]?.component as RuntimeToolExecution | undefined)?.expanded === true) start += 1;
@@ -511,7 +526,14 @@ class GroupingRuntime {
 				while (end < group.members.length && (group.members[end]?.component as RuntimeToolExecution | undefined)?.expanded !== true) end += 1;
 				const members = group.members.slice(start, end);
 				const leader = members[0];
-				if (leader) rows.set(leader.component, this.renderExplorationGroup(members, width, theme));
+				if (leader) {
+					rows.set(
+						leader.component,
+						group.kind === "exploration"
+							? this.renderExplorationGroup(members, width, theme)
+							: this.renderIntentCommandGroup(members, group.heading ?? "…", width, theme),
+					);
+				}
 				start = end + 1;
 			}
 			return rows;
@@ -560,6 +582,27 @@ class GroupingRuntime {
 			const branch = index === members.length - 1 ? "└" : "├";
 			const selection = this.selectionPrefix(member.component);
 			const text = `  ${branch} ${selection}${member.summary}`;
+			lines.push(theme ? theme.fg("muted", text) : text);
+		}
+		return widthSafeLines(lines, width);
+	}
+
+	private renderIntentCommandGroup(
+		members: GroupMember[],
+		heading: string,
+		width: number,
+		theme: Theme | undefined,
+	): string[] {
+		const failed = members.some((member) => semanticState(member.component as RuntimeToolExecution) === "failure");
+		const pending = members.some((member) => semanticState(member.component as RuntimeToolExecution) === "pending");
+		const status = failed ? "Failed" : pending ? "Running" : "Ran";
+		const color: StatusColor = failed ? "error" : pending ? "accent" : "success";
+		const lines = [statusHeader(theme, status, `— ${heading}`, color)];
+		for (let index = 0; index < members.length; index += 1) {
+			const member = members[index];
+			if (!member) continue;
+			const branch = index === members.length - 1 ? "└" : "├";
+			const text = `  ${branch} ${this.selectionPrefix(member.component)}${member.summary}`;
 			lines.push(theme ? theme.fg("muted", text) : text);
 		}
 		return widthSafeLines(lines, width);
@@ -672,11 +715,15 @@ class GroupingRuntime {
 		theme: Theme | undefined,
 	): string[] {
 		const state = semanticState(runtime);
-		const status = state === "pending" ? "Running" : state === "success" ? "Ran" : "Command failed";
+		const intentSummary = formatIntentCommandSummary(descriptor, INTENT_COMMAND_CHARACTER_LIMIT);
+		const status = state === "pending" ? "Running" : state === "success" ? "Ran" : intentSummary ? "Failed" : "Command failed";
 		const color: StatusColor = state === "pending" ? "accent" : state === "success" ? "success" : "error";
-		const lines = [statusHeader(theme, status, formatCommandSummary(descriptor), color, this.selectionLabels.get(component))];
-		for (const output of this.normalizedOutput(runtime, 3)) {
-			lines.push(detailLine(theme, output, state === "failure"));
+		const summary = intentSummary ? `— ${intentSummary}` : formatCommandSummary(descriptor);
+		const lines = [statusHeader(theme, status, summary, color, this.selectionLabels.get(component))];
+		if (!intentSummary) {
+			for (const output of this.normalizedOutput(runtime, 3)) {
+				lines.push(detailLine(theme, output, state === "failure"));
+			}
 		}
 		return widthSafeLines(lines, width);
 	}
@@ -796,12 +843,36 @@ class GroupingRuntime {
 			const descriptor = this.descriptor(component);
 			if (descriptor) tools.push({ component, index, descriptor });
 		}
-		const grouped = groupExplorationItems(
-			tools.map(({ component, index, descriptor }) => ({
+		let previousExplorationSettled = false;
+		let breakBeforeNextExploration = false;
+		const explorationItems: ExplorationGroupItem[] = [];
+		for (let index = 0; index < state.components.length; index += 1) {
+			const component = state.components[index];
+			if (!component) continue;
+			const descriptor = this.descriptor(component);
+			if (!descriptor) {
+				if (component instanceof this.userClass || hasVisibleAssistantText(component)) {
+					breakBeforeNextExploration = true;
+					previousExplorationSettled = false;
+				}
+				continue;
+			}
+			const exploration = isExplorationTool(descriptor);
+			const pending = semanticState(component as RuntimeToolExecution) === "pending";
+			if (exploration && pending && previousExplorationSettled) {
+				this.explorationBreaks.add(component);
+			}
+			explorationItems.push({
 				id: componentId(component, index),
-				exploration: isExplorationTool(descriptor),
-			})),
-		);
+				exploration,
+				breakBefore:
+					exploration &&
+					(breakBeforeNextExploration || this.explorationBreaks.has(component)),
+			});
+			breakBeforeNextExploration = false;
+			previousExplorationSettled = exploration && !pending;
+		}
+		const grouped = groupExplorationItems(explorationItems);
 		const byId = new Map(tools.map((tool) => [componentId(tool.component, tool.index), tool]));
 		for (const groupedItems of grouped) {
 			const members: GroupMember[] = [];
@@ -844,6 +915,54 @@ class GroupingRuntime {
 		}
 		addMutationGroup();
 
+		let intentCommandMembers: GroupMember[] = [];
+		let intentCommandGroup: string | undefined;
+		let intentCommandHeading: string | undefined;
+		const addIntentCommandGroup = () => {
+			if (intentCommandMembers.length >= 2 && intentCommandHeading) {
+				const group: RuntimeGroup = {
+					kind: "command-intent",
+					members: intentCommandMembers,
+					stable: this.isSettled(intentCommandMembers),
+					heading: intentCommandHeading,
+				};
+				for (let index = 0; index < intentCommandMembers.length; index += 1) {
+					const member = intentCommandMembers[index];
+					if (member) this.memberships.set(member.component, { group, index });
+				}
+			}
+			intentCommandMembers = [];
+			intentCommandGroup = undefined;
+			intentCommandHeading = undefined;
+		};
+		for (const component of state.components) {
+			const descriptor = this.descriptor(component);
+			const intent = descriptor ? bashDisplayIntent(descriptor) : undefined;
+			const eligible =
+				descriptor &&
+				classifyToolPresentation(descriptor) === "command" &&
+				intent?.group &&
+				intent.groupText;
+			if (eligible && intent) {
+				if (
+					intentCommandMembers.length > 0 &&
+					(intent.group !== intentCommandGroup || intent.groupText !== intentCommandHeading)
+				) {
+					addIntentCommandGroup();
+				}
+				intentCommandGroup = intent.group;
+				intentCommandHeading = intent.groupText;
+				intentCommandMembers.push({
+					component,
+					descriptor,
+					summary: formatIntentCommandSummary(descriptor) ?? formatCommandSummary(descriptor),
+				});
+			} else if (descriptor || hasVisibleAssistantText(component)) {
+				addIntentCommandGroup();
+			}
+		}
+		addIntentCommandGroup();
+
 		let remoteMembers: GroupMember[] = [];
 		const addRemoteGroup = () => {
 			if (remoteMembers.length >= 2) {
@@ -874,6 +993,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 
 	const toolClass = options.toolClass ?? ToolExecutionComponent;
 	const assistantClass = options.assistantClass ?? AssistantMessageComponent;
+	const userClass = options.userClass ?? UserMessageComponent;
 	const containerClass = options.containerClass ?? Container;
 	const toolPrototype = toolClass.prototype as unknown as Record<string, unknown>;
 	const assistantPrototype = assistantClass.prototype as unknown as Record<string, unknown>;
@@ -922,6 +1042,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	const runtime = new GroupingRuntime(
 		options.getTheme,
 		updateAssistantContent,
+		userClass,
 		options.onParentRebuild,
 		options.onCompactTextOutputNormalize,
 		options.onCustomRowsCompute,
@@ -950,7 +1071,10 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 		runtime.adopt(
 			this,
 			this.children.filter(
-				(component) => component instanceof toolClass || component instanceof assistantClass,
+				(component) =>
+					component instanceof toolClass ||
+					component instanceof assistantClass ||
+					component instanceof userClass,
 			),
 			assistantClass,
 		);
@@ -958,13 +1082,22 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	};
 	const wrappedAddChild: AddChildMethod = function (component) {
 		addChild.call(this, component);
-		if (component instanceof toolClass || component instanceof assistantClass) {
+		if (
+			component instanceof toolClass ||
+			component instanceof assistantClass ||
+			component instanceof userClass
+		) {
 			runtime.observe(this, component, component instanceof assistantClass);
 		}
 	};
 	const wrappedRemoveChild: RemoveChildMethod = function (component) {
 		removeChild.call(this, component);
-		if (component instanceof toolClass || component instanceof assistantClass) runtime.forget(this, component);
+		if (
+			component instanceof toolClass ||
+			component instanceof assistantClass ||
+			component instanceof userClass
+		)
+			runtime.forget(this, component);
 	};
 	const wrappedClear: ClearMethod = function () {
 		clear.call(this);
