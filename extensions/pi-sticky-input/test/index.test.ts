@@ -158,6 +158,20 @@ test("extension captures the live TUI, subscribes to terminal input, and cleans 
 	assert.match(session.tui.terminal.writes[1]!, /1007l.*1049l/);
 });
 
+test("session compaction preserves history removed by the chat rebuild", async () => {
+	const session = createSessionHarness();
+	await session.harness.handlers.get("session_start")?.({}, session.context);
+	session.tui.render(80);
+
+	await session.harness.handlers.get("session_before_compact")?.({}, session.context);
+	session.tui.children[0] = new TestComponent(["[compaction]", "kept-tail"]);
+	session.tui.requestRender();
+	session.tui.render(80);
+	session.getShortcut("ctrl+shift+up")?.();
+
+	assert.deepEqual(session.tui.render(80).slice(0, 6), ["h0", "h1", "h2", "h3", "h4", "h5"]);
+});
+
 test("wheel cursor reports are consumed while the viewport is not ready", async () => {
 	const session = createSessionHarness();
 	await session.harness.handlers.get("session_start")?.({}, session.context);

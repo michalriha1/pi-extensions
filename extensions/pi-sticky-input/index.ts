@@ -118,6 +118,10 @@ export default function piBottomScroll(pi: ExtensionAPI): void {
 		viewport?.requestCleanRender();
 	});
 
+	pi.on("session_before_compact", () => {
+		activeViewport?.preserveHistory();
+	});
+
 	pi.on("session_shutdown", () => {
 		cleanupActiveSession();
 	});

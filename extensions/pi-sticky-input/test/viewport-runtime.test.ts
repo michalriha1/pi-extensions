@@ -119,6 +119,26 @@ test("scroll-only frames reuse raw history and ordinary requests invalidate the 
 	assert.equal(fixture.history.renderCalls, 2);
 });
 
+test("preserves rendered history when compaction replaces the chat contents", () => {
+	const fixture = createFixture(["before-0", "before-1", "before-2", "before-3"]);
+	fixture.tui.render(80);
+	fixture.runtime.preserveHistory();
+
+	fixture.history.lines = ["[compaction]", "kept-tail"];
+	fixture.tui.requestRender();
+	fixture.tui.render(80);
+	fixture.runtime.navigate("top");
+
+	assert.deepEqual(fixture.tui.render(80).slice(0, 6), [
+		"before-0",
+		"before-1",
+		"before-2",
+		"before-3",
+		"[compaction]",
+		"kept-tail",
+	]);
+});
+
 test("visible overlays fall back, clear pending motion, and cleanly re-enter", () => {
 	const fixture = createFixture();
 	fixture.tui.render(80);
