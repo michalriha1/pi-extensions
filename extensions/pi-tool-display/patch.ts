@@ -255,7 +255,6 @@ class GroupingRuntime {
 	private componentParents = new WeakMap<object, object>();
 	private descriptorCache = new WeakMap<object, DescriptorCacheEntry>();
 	private normalizedOutputCache = new WeakMap<RuntimeToolResult, Map<number, string[]>>();
-	private explorationBreaks = new WeakSet<object>();
 	private groupRowsCache = new WeakMap<RuntimeGroup, Map<Theme | undefined, Map<number, Map<object, string[]>>>>();
 	private componentRowsCache = new WeakMap<object, Map<Theme | undefined, Map<number, string[]>>>();
 	private selectionLabels = new Map<object, string>();
@@ -294,7 +293,6 @@ class GroupingRuntime {
 		this.componentParents = new WeakMap();
 		this.descriptorCache = new WeakMap();
 		this.normalizedOutputCache = new WeakMap();
-		this.explorationBreaks = new WeakSet();
 		this.groupRowsCache = new WeakMap();
 		this.componentRowsCache = new WeakMap();
 		this.adoptedParents = new WeakSet();
@@ -631,13 +629,29 @@ class GroupingRuntime {
 			const edit = member.descriptor.name.toLowerCase() === "edit";
 			const target = member.summary;
 			const state = semanticState(runtime);
-			const action = edit ? (state === "pending" ? "Editing" : "Edited") : state === "pending" ? "Writing" : "Wrote";
-			const summary = allEdits || allWrites ? target : `${action} ${target}`;
-			const statistics = formatMutationStatistics(member.descriptor, runtime.result?.details);
+			const failed = state === "failure";
+			const action = edit
+				? state === "pending"
+					? "Editing"
+					: failed
+						? "Edit failed"
+						: "Edited"
+				: state === "pending"
+					? "Writing"
+					: failed
+						? "Write failed"
+						: "Wrote";
+			const summary =
+				failed && (allEdits || allWrites)
+					? `Failed ${target}`
+					: allEdits || allWrites
+						? target
+						: `${action} ${target}`;
+			const statistics = failed ? undefined : formatMutationStatistics(member.descriptor, runtime.result?.details);
 			const compactStatistics = edit ? statistics?.replace(/ lines$/, "") : statistics;
 			const branch = index === members.length - 1 ? "└" : "├";
 			const text = `  ${branch} ${this.selectionPrefix(member.component)}${summary}${compactStatistics ? ` (${compactStatistics})` : ""}`;
-			lines.push(theme ? theme.fg("muted", text) : text);
+			lines.push(theme ? theme.fg(failed ? "error" : "muted", text) : text);
 		}
 		return widthSafeLines(lines, width);
 	}
@@ -645,7 +659,7 @@ class GroupingRuntime {
 	private isGroupableMutation(member: GroupMember | undefined): boolean {
 		if (!member) return false;
 		const runtime = member.component as RuntimeToolExecution;
-		return runtime.expanded !== true && semanticState(runtime) !== "failure";
+		return runtime.expanded !== true;
 	}
 
 	private renderRemoteGroup(members: GroupMember[], width: number, theme: Theme | undefined): string[] {
@@ -843,7 +857,6 @@ class GroupingRuntime {
 			const descriptor = this.descriptor(component);
 			if (descriptor) tools.push({ component, index, descriptor });
 		}
-		let previousExplorationSettled = false;
 		let breakBeforeNextExploration = false;
 		const explorationItems: ExplorationGroupItem[] = [];
 		for (let index = 0; index < state.components.length; index += 1) {
@@ -853,24 +866,16 @@ class GroupingRuntime {
 			if (!descriptor) {
 				if (component instanceof this.userClass || hasVisibleAssistantText(component)) {
 					breakBeforeNextExploration = true;
-					previousExplorationSettled = false;
 				}
 				continue;
 			}
 			const exploration = isExplorationTool(descriptor);
-			const pending = semanticState(component as RuntimeToolExecution) === "pending";
-			if (exploration && pending && previousExplorationSettled) {
-				this.explorationBreaks.add(component);
-			}
 			explorationItems.push({
 				id: componentId(component, index),
 				exploration,
-				breakBefore:
-					exploration &&
-					(breakBeforeNextExploration || this.explorationBreaks.has(component)),
+				breakBefore: exploration && breakBeforeNextExploration,
 			});
 			breakBeforeNextExploration = false;
-			previousExplorationSettled = exploration && !pending;
 		}
 		const grouped = groupExplorationItems(explorationItems);
 		const byId = new Map(tools.map((tool) => [componentId(tool.component, tool.index), tool]));
@@ -955,7 +960,9 @@ class GroupingRuntime {
 				intentCommandMembers.push({
 					component,
 					descriptor,
-					summary: formatIntentCommandSummary(descriptor) ?? formatCommandSummary(descriptor),
+					summary:
+						formatIntentCommandSummary(descriptor, INTENT_COMMAND_CHARACTER_LIMIT) ??
+						formatCommandSummary(descriptor, INTENT_COMMAND_CHARACTER_LIMIT),
 				});
 			} else if (descriptor || hasVisibleAssistantText(component)) {
 				addIntentCommandGroup();

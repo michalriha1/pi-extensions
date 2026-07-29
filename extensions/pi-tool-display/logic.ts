@@ -5,7 +5,7 @@ export const INTENT_KIND_FIELD = "intentKind";
 export const INTENT_TEXT_FIELD = "intentText";
 export const INTENT_GROUP_FIELD = "intentGroup";
 export const INTENT_GROUP_TEXT_FIELD = "intentGroupText";
-export const INTENT_COMMAND_CHARACTER_LIMIT = 20;
+export const INTENT_COMMAND_CHARACTER_LIMIT = 30;
 export const INTENT_KINDS = ["explore", "modify"] as const;
 export type IntentKind = (typeof INTENT_KINDS)[number];
 

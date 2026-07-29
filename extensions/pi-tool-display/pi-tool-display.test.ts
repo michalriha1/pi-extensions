@@ -287,12 +287,12 @@ describe("exploration classification", () => {
 			formatExplorationSummary({
 				name: "bash",
 				args: {
-					command: "1234567890123456789012345",
+					command: "12345678901234567890123456789012345",
 					intentKind: "explore",
 					intentText: "Inspect repository status",
 				},
 			}),
-		).toBe("Inspect repository status · $ 12345678901234567890…");
+		).toBe("Inspect repository status · $ 123456789012345678901234567890…");
 		expect(formatExplorationSummary({ name: "bash", args: { command: "git status", intentKind: "explore" } })).toBe(
 			"$ git status",
 		);
@@ -428,13 +428,17 @@ describe("bash intent summaries", () => {
 		);
 	});
 
-	test("limits only standalone bash command text to twenty characters", () => {
+	test("limits bash command text to thirty characters", () => {
 		expect(
 			formatIntentCommandSummary({
 				name: "bash",
-				args: { command: "1234567890123456789012345", intentKind: "modify", intentText: "Copy URL" },
-			}, 20),
-		).toBe("Copy URL · $ 12345678901234567890…");
+				args: {
+					command: "12345678901234567890123456789012345",
+					intentKind: "modify",
+					intentText: "Copy URL",
+				},
+			}, 30),
+		).toBe("Copy URL · $ 123456789012345678901234567890…");
 	});
 });
 
@@ -506,7 +510,23 @@ describe("runtime patch", () => {
 		expect(read.render(120)[1]).toBe("• Explored");
 	});
 
-	test("keeps a streamed bash call visible when it becomes exploration", () => {
+	test("adds a sequential pending exploration to the existing group immediately", () => {
+		install();
+		const parent = new Container();
+		const previous = component("read", "read-before-next", { path: "previous.ts" });
+		parent.addChild(previous);
+		previous.updateResult({ content: [{ type: "text", text: "previous" }], isError: false }, false);
+
+		const next = component("read", "read-next", { path: "next.ts" });
+		parent.addChild(next);
+		expect(previous.render(120)).toEqual(["", "• Exploring", "  ├ Read previous.ts", "  └ Read next.ts"]);
+		expect(next.render(120)).toEqual([]);
+
+		next.updateResult({ content: [{ type: "text", text: "next" }], isError: false }, false);
+		expect(previous.render(120)[1]).toBe("• Explored");
+	});
+
+	test("adds a streamed exploration bash call to the existing group immediately", () => {
 		install();
 		const parent = new Container();
 		const previous = component("read", "read-before-bash", { path: "previous.ts" });
@@ -526,18 +546,22 @@ describe("runtime patch", () => {
 			intentKind: "explore",
 			intentText: "Wait and print working directory",
 		});
-		expect(command.render(120)).toEqual([
+		expect(previous.render(120)).toEqual([
 			"",
 			"• Exploring",
+			"  ├ Read previous.ts",
 			"  └ Wait and print working directory · $ sleep 4; pwd",
 		]);
+		expect(command.render(120)).toEqual([]);
 		command.updateResult({ content: [{ type: "text", text: "cwd" }], isError: false }, false);
 		parent.addChild(thinkingComponent("next", "read", "Done."));
-		expect(command.render(120)).toEqual([
+		expect(previous.render(120)).toEqual([
 			"",
 			"• Explored",
+			"  ├ Read previous.ts",
 			"  └ Wait and print working directory · $ sleep 4; pwd",
 		]);
+		expect(command.render(120)).toEqual([]);
 	});
 
 	test("renders exploration bash intent with a limited command summary", () => {
@@ -547,7 +571,7 @@ describe("runtime patch", () => {
 			"bash",
 			"bash-explore-intent",
 			{
-				command: "1234567890123456789012345",
+				command: "12345678901234567890123456789012345",
 				intentKind: "explore",
 				intentText: "Inspect repository status",
 			},
@@ -558,13 +582,13 @@ describe("runtime patch", () => {
 		expect(command.render(120)).toEqual([
 			"",
 			"• Exploring",
-			"  └ Inspect repository status · $ 12345678901234567890…",
+			"  └ Inspect repository status · $ 123456789012345678901234567890…",
 		]);
 		command.updateResult({ content: [{ type: "text", text: "clean" }], isError: false }, false);
 		expect(command.render(120)).toEqual([
 			"",
 			"• Explored",
-			"  └ Inspect repository status · $ 12345678901234567890…",
+			"  └ Inspect repository status · $ 123456789012345678901234567890…",
 		]);
 	});
 
@@ -1177,7 +1201,7 @@ describe("runtime patch", () => {
 		expect(write.render(120)).toEqual([]);
 	});
 
-	test("keeps failed mutations standalone and splits surrounding groups", () => {
+	test("keeps failed edits in their group and labels them as failed", () => {
 		install();
 		const parent = new Container();
 		const first = component("edit", "edit-1", { path: "first.ts", edits: [{ oldText: "a", newText: "b" }] });
@@ -1187,15 +1211,19 @@ describe("runtime patch", () => {
 		for (const mutation of [first, failed, third, fourth]) parent.addChild(mutation);
 		failed.updateResult({ content: [{ type: "text", text: "permission denied" }], isError: true }, false);
 
-		expect(first.render(120)[1]).toBe("• Editing first.ts");
-		expect(failed.render(120)).toContain("• Edit failed failed.ts");
-		expect(third.render(120)).toEqual([
+		expect(first.render(120)).toEqual([
 			"",
 			"• Editing",
+			"  ├ first.ts (+1 -1)",
+			"  ├ Failed failed.ts",
 			"  ├ third.ts (+1 -1)",
 			"  └ fourth.ts (+1 -1)",
 		]);
-		expect(fourth.render(120)).toEqual([]);
+		expect(failed.render(120)).toEqual([]);
+		for (const mutation of [first, third, fourth]) {
+			mutation.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
+		}
+		expect(first.render(120)[1]).toBe("• Edited");
 	});
 
 	test("caches complete settled group and standalone rows across 128 identical redraws", () => {
@@ -1457,7 +1485,7 @@ describe("runtime patch", () => {
 			"bash",
 			"bash-intent",
 			{
-				command: "1234567890123456789012345",
+				command: "12345678901234567890123456789012345",
 				intentKind: "modify",
 				intentText: "Copy URL to clipboard",
 			},
@@ -1467,17 +1495,17 @@ describe("runtime patch", () => {
 
 		expect(command.render(120)).toEqual([
 			"",
-			"• Running — Copy URL to clipboard · $ 12345678901234567890…",
+			"• Running — Copy URL to clipboard · $ 123456789012345678901234567890…",
 		]);
 		command.updateResult({ content: [{ type: "text", text: "copied" }], isError: false }, false);
 		expect(command.render(120)).toEqual([
 			"",
-			"• Ran — Copy URL to clipboard · $ 12345678901234567890…",
+			"• Ran — Copy URL to clipboard · $ 123456789012345678901234567890…",
 		]);
 		command.updateResult({ content: [{ type: "text", text: "clipboard unavailable" }], isError: true }, false);
 		expect(command.render(120)).toEqual([
 			"",
-			"• Failed — Copy URL to clipboard · $ 12345678901234567890…",
+			"• Failed — Copy URL to clipboard · $ 123456789012345678901234567890…",
 		]);
 	});
 
@@ -1485,7 +1513,7 @@ describe("runtime patch", () => {
 		install();
 		const parent = new Container();
 		const calls = [
-			["git reset --soft HEAD~1", "Reset previous commit"],
+			["12345678901234567890123456789012345", "Run long command"],
 			["git commit -m submit", "Commit changes"],
 			["git push", "Push branch"],
 		].map(([command, intentText], index) =>
@@ -1507,7 +1535,7 @@ describe("runtime patch", () => {
 		expect(calls[0]?.render(120)).toEqual([
 			"",
 			"• Running — Submit changes to git",
-			"  ├ Reset previous commit · $ git reset --soft HEAD~1",
+			"  ├ Run long command · $ 123456789012345678901234567890…",
 			"  ├ Commit changes · $ git commit -m submit",
 			"  └ Push branch · $ git push",
 		]);
