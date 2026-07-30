@@ -1,0 +1,39 @@
+{
+  "name": "pi-context-tree",
+  "version": "0.1.0",
+  "description": "Inspect cumulative context-window usage across the session tree",
+  "type": "module",
+  "main": "./src/index.ts",
+  "files": [
+    "src/",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "context",
+    "tree",
+    "tokens"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.83.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-tui": "0.83.0",
+    "@types/node": "^25.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
