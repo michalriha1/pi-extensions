@@ -119,24 +119,18 @@ test("scroll-only frames reuse raw history and ordinary requests invalidate the 
 	assert.equal(fixture.history.renderCalls, 2);
 });
 
-test("preserves rendered history when compaction replaces the chat contents", () => {
+test("ordinary transcript rebuilds use only Pi's current native history", () => {
 	const fixture = createFixture(["before-0", "before-1", "before-2", "before-3"]);
 	fixture.tui.render(80);
-	fixture.runtime.preserveHistory();
 
-	fixture.history.lines = ["[compaction]", "kept-tail"];
+	fixture.history.lines = ["full-native-branch-0", "full-native-branch-1"];
 	fixture.tui.requestRender();
 	fixture.tui.render(80);
 	fixture.runtime.navigate("top");
 
-	assert.deepEqual(fixture.tui.render(80).slice(0, 6), [
-		"before-0",
-		"before-1",
-		"before-2",
-		"before-3",
-		"[compaction]",
-		"kept-tail",
-	]);
+	const lines = fixture.tui.render(80).slice(0, 6);
+	assert.deepEqual(lines.slice(0, 2), ["full-native-branch-0", "full-native-branch-1"]);
+	assert.equal(lines.some((line) => line.startsWith("before-")), false);
 });
 
 test("visible overlays fall back, clear pending motion, and cleanly re-enter", () => {

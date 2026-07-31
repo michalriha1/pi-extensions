@@ -156,7 +156,6 @@ export class ViewportRuntime {
 	private drainInputWrapper: TerminalLike["drainInput"] | undefined;
 	private scrollState: ScrollState = createScrollState();
 	private historyCache: HistoryCache | undefined;
-	private archivedHistoryLines: string[] = [];
 	private installed = false;
 	private disposed = false;
 	private active = false;
@@ -249,11 +248,6 @@ export class ViewportRuntime {
 		this.tui.requestRender(false);
 	}
 
-	preserveHistory(): void {
-		if (!this.installed || this.disposed || !this.historyCache) return;
-		this.archivedHistoryLines = [...this.historyCache.historyLines];
-	}
-
 	enqueueWheel(direction: ScrollDirection, now: number): boolean {
 		if (!this.canConsumeScroll()) return false;
 		this.scrollState = addWheelInput(this.scrollState, direction, now);
@@ -289,7 +283,6 @@ export class ViewportRuntime {
 		this.disposed = true;
 		this.active = false;
 		this.historyCache = undefined;
-		this.archivedHistoryLines = [];
 		this.scrollState = resetScrollMotion(this.scrollState);
 
 		if (this.renderWrapper) {
@@ -377,7 +370,7 @@ export class ViewportRuntime {
 				&& sameSignature(cache.signature, layout.signature);
 			historyLines = cachedHistory
 				? [...cache.historyLines]
-				: [...this.archivedHistoryLines, ...renderComponents(layout.historyChildren, width)];
+				: renderComponents(layout.historyChildren, width);
 			stickyLines = renderComponents(layout.stickyChildren, width);
 		} catch {
 			return this.fallback("component-render-failed", this.originalRender.call(this.tui, width), width, height);

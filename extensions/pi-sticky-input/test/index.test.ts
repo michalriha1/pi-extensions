@@ -74,6 +74,22 @@ class TestTui {
 	}
 }
 
+class TestSessionManager {
+	branch = ["old-user", "old-assistant", "compaction", "kept-tail"];
+
+	getBranch(): string[] {
+		return [...this.branch];
+	}
+
+	buildContextEntries(): string[] {
+		return this.branch.slice(-2);
+	}
+
+	buildSessionContext(): { messages: string[] } {
+		return { messages: this.branch.slice(-2) };
+	}
+}
+
 type ExtensionHandler = (event: unknown, context: unknown) => unknown;
 type TerminalInputHandler = (data: string) => { consume?: boolean; data?: string } | undefined;
 
@@ -93,6 +109,7 @@ class ExtensionHarness {
 function createSessionHarness(): {
 	harness: ExtensionHarness;
 	tui: TestTui;
+	manager: TestSessionManager;
 	context: object;
 	getInputHandler: () => TerminalInputHandler | undefined;
 	getShortcut: (shortcut: string) => (() => unknown) | undefined;
@@ -104,8 +121,10 @@ function createSessionHarness(): {
 	let inputHandler: TerminalInputHandler | undefined;
 	let unsubscribeCount = 0;
 	let widget: (Component & { dispose?(): void }) | undefined;
+	const manager = new TestSessionManager();
 	const context = {
 		mode: "tui",
+		sessionManager: manager,
 		ui: {
 			setWidget: (
 				_key: string,
@@ -131,6 +150,7 @@ function createSessionHarness(): {
 	return {
 		harness,
 		tui,
+		manager,
 		context,
 		getInputHandler: () => inputHandler,
 		getShortcut: (shortcut) => harness.shortcuts.get(shortcut)?.handler,
@@ -143,6 +163,8 @@ test("extension captures the live TUI, subscribes to terminal input, and cleans 
 	const session = createSessionHarness();
 	await session.harness.handlers.get("session_start")?.({}, session.context);
 	assert.equal(Object.hasOwn(session.tui, "render"), true);
+	assert.equal(Object.hasOwn(session.manager, "buildContextEntries"), true);
+	assert.deepEqual(session.manager.buildContextEntries(), session.manager.getBranch());
 	assert.equal(session.tui.terminal.writes.length, 1);
 	assert.match(session.tui.terminal.writes[0]!, /1049h.*1007h/);
 
@@ -154,22 +176,31 @@ test("extension captures the live TUI, subscribes to terminal input, and cleans 
 	await session.harness.handlers.get("session_shutdown")?.({}, session.context);
 	assert.equal(session.getUnsubscribeCount(), 1);
 	assert.equal(Object.hasOwn(session.tui, "render"), false);
+	assert.equal(Object.hasOwn(session.manager, "buildContextEntries"), false);
 	assert.equal(session.tui.terminal.writes.length, 2);
 	assert.match(session.tui.terminal.writes[1]!, /1007l.*1049l/);
 });
 
-test("session compaction preserves history removed by the chat rebuild", async () => {
+test("session replacement restores the previous manager before patching the next one", async () => {
 	const session = createSessionHarness();
 	await session.harness.handlers.get("session_start")?.({}, session.context);
-	session.tui.render(80);
+	const nextManager = new TestSessionManager();
+	const nextContext = { ...session.context, sessionManager: nextManager };
 
-	await session.harness.handlers.get("session_before_compact")?.({}, session.context);
-	session.tui.children[0] = new TestComponent(["[compaction]", "kept-tail"]);
-	session.tui.requestRender();
-	session.tui.render(80);
-	session.getShortcut("ctrl+shift+up")?.();
+	await session.harness.handlers.get("session_start")?.({}, nextContext);
+	assert.equal(Object.hasOwn(session.manager, "buildContextEntries"), false);
+	assert.equal(Object.hasOwn(nextManager, "buildContextEntries"), true);
+	await session.harness.handlers.get("session_shutdown")?.({}, nextContext);
+	assert.equal(Object.hasOwn(nextManager, "buildContextEntries"), false);
+});
 
-	assert.deepEqual(session.tui.render(80).slice(0, 6), ["h0", "h1", "h2", "h3", "h4", "h5"]);
+test("non-TUI sessions leave the session manager untouched", async () => {
+	const session = createSessionHarness();
+	const context = { ...session.context, mode: "print" };
+
+	await session.harness.handlers.get("session_start")?.({}, context);
+	assert.equal(Object.hasOwn(session.manager, "buildContextEntries"), false);
+	assert.deepEqual(session.manager.buildContextEntries(), ["compaction", "kept-tail"]);
 });
 
 test("wheel cursor reports are consumed while the viewport is not ready", async () => {

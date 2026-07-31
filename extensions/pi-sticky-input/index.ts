@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 
 import { TerminalModes } from "./terminal-modes.ts";
+import { installFullBranchTranscriptProjection } from "./transcript-projection.ts";
 import { createViewportRuntime, type ViewportRuntime } from "./viewport-runtime.ts";
 
 const EXTENSION_ID = "pi-sticky-input";
@@ -81,18 +82,25 @@ export default function piBottomScroll(pi: ExtensionAPI): void {
 		let viewport: ViewportRuntime | undefined;
 		let terminalModes: TerminalModes | undefined;
 		let unsubscribeInput: (() => void) | undefined;
+		let restoreTranscriptProjection: (() => void) | undefined;
 		let cleaned = false;
 		const cleanup = (): void => {
 			if (cleaned) return;
 			cleaned = true;
-			unsubscribeInput?.();
-			unsubscribeInput = undefined;
-			viewport?.dispose();
-			if (activeViewport === viewport) activeViewport = undefined;
-			terminalModes?.deactivate();
-			if (cleanupActiveSession === cleanup) cleanupActiveSession = () => {};
+			try {
+				unsubscribeInput?.();
+				unsubscribeInput = undefined;
+				viewport?.dispose();
+				if (activeViewport === viewport) activeViewport = undefined;
+				terminalModes?.deactivate();
+			} finally {
+				restoreTranscriptProjection?.();
+				restoreTranscriptProjection = undefined;
+				if (cleanupActiveSession === cleanup) cleanupActiveSession = () => {};
+			}
 		};
 		cleanupActiveSession = cleanup;
+		restoreTranscriptProjection = installFullBranchTranscriptProjection(ctx.sessionManager);
 
 		const captureWidget = new CaptureWidget(cleanup);
 		ctx.ui.setWidget(
@@ -116,10 +124,6 @@ export default function piBottomScroll(pi: ExtensionAPI): void {
 			{ placement: "belowEditor" },
 		);
 		viewport?.requestCleanRender();
-	});
-
-	pi.on("session_before_compact", () => {
-		activeViewport?.preserveHistory();
 	});
 
 	pi.on("session_shutdown", () => {
