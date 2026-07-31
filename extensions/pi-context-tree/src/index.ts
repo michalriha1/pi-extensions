@@ -18,9 +18,11 @@ import { describeEntry, renderEmptyPanel, renderPanel } from "./panel.ts";
 import { categorizeMessages, estimateSystemPromptTokens, estimateToolSchemaTokens, type CategorizableMessage } from "./token-estimate.ts";
 import type { ContextWindowResolver, RequestSnapshot } from "./types.ts";
 
-/** How many lines the panel reserves above the tree, used to shrink the
- * tree's own visible-line budget so the combined view still fits. */
-const PANEL_RESERVED_LINES = 10;
+/** Worst-case panel height (exact tool interaction) and fixed chrome
+ * rendered around TreeSelectorComponent's visible entry list. */
+const MAX_PANEL_LINES = 15;
+const TREE_CHROME_LINES = 10;
+const MIN_TREE_ENTRY_LINES = 5;
 
 export default function piContextTreeExtension(pi: ExtensionAPI): void {
   let tracker: ContextTracker | undefined;
@@ -121,6 +123,7 @@ export class ContextTreeInspectorComponent implements Component, Focusable {
   private readonly tracker: ContextTracker;
   private readonly getEntries: () => readonly SessionEntry[];
   private readonly getEntry: (id: string) => SessionEntry | undefined;
+  private readonly terminalRows: number;
   private _focused = false;
 
   constructor(opts: ContextTreeInspectorOptions) {
@@ -128,15 +131,20 @@ export class ContextTreeInspectorComponent implements Component, Focusable {
     this.tracker = opts.tracker;
     this.getEntries = opts.getEntries;
     this.getEntry = opts.getEntry;
+    this.terminalRows = opts.tui.terminal.rows;
 
-    const maxVisibleLines = Math.max(5, opts.tui.terminal.rows - PANEL_RESERVED_LINES);
+    // TreeSelectorComponent derives its entry-list height as half the
+    // terminalHeight argument, then adds ten lines of borders, title, help,
+    // search, and spacing. Budget both that chrome and the largest panel so
+    // terminal clipping cannot hide the panel at the top.
+    const treeEntryLines = Math.max(
+      MIN_TREE_ENTRY_LINES,
+      this.terminalRows - MAX_PANEL_LINES - TREE_CHROME_LINES,
+    );
     this.tree = new TreeSelectorComponent(
       opts.tree,
       opts.leafId,
-      // TreeSelectorComponent computes its own budget as half of the value
-      // passed in; double our remaining budget so the *result* accounts for
-      // the panel's reserved lines.
-      maxVisibleLines * 2,
+      treeEntryLines * 2,
       () => {
         /* inspection only: never branch/navigate the real session */
       },
@@ -170,7 +178,8 @@ export class ContextTreeInspectorComponent implements Component, Focusable {
     const styledPanel = panelLines.map((line, i) =>
       truncateToWidth(i === 0 ? this.theme.bold(this.theme.fg("accent", line)) : this.theme.fg("text", line), width),
     );
-    return [...styledPanel, ...this.tree.render(width)];
+    const remainingRows = Math.max(0, this.terminalRows - styledPanel.length);
+    return [...styledPanel, ...this.tree.render(width).slice(0, remainingRows)].slice(0, this.terminalRows);
   }
 
   private buildPanelLines(): string[] {

@@ -205,6 +205,32 @@ test("getBreakdown degrades gracefully with no observed category data", () => {
   assert.equal(breakdown.total, breakdown.messages + breakdown.toolCalls + breakdown.toolResponses);
 });
 
+test("estimated breakdown total stays aligned with the row cumulative after an exact API anchor", () => {
+  const tracker = new ContextTracker(() => 200_000);
+  const user1 = userEntry(null, "hello");
+  const assistant1 = assistantEntry(user1.id, {
+    usage: { input: 1000, output: 20, cacheRead: 0, cacheWrite: 0 },
+  });
+  const result1 = toolResultEntry(assistant1.id, {
+    toolCallId: "call1",
+    toolName: "read",
+    content: "x".repeat(400),
+  });
+
+  tracker.sync([user1, assistant1, result1]);
+
+  const row = tracker.getRowInfo(result1.id)!;
+  const breakdown = tracker.getBreakdown(result1.id)!;
+  assert.equal(row.exact, false);
+  assert.equal(row.cumulative, 1120);
+  assert.equal(breakdown.total, row.cumulative);
+  assert.equal(breakdown.toolResponses, 100);
+  assert.equal(breakdown.messages, 0);
+  assert.equal(breakdown.toolCalls, 0);
+  assert.equal(breakdown.gap, 1020);
+  assert.equal(breakdown.available, 200_000 - row.cumulative);
+});
+
 test("unmatched snapshots do not leak into unrelated branches", () => {
   const tracker = new ContextTracker(() => 200_000);
   const user1 = userEntry(null, "hello");

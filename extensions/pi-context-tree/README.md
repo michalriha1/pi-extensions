@@ -65,10 +65,10 @@ Available: 187,655
   responses / messages): always estimated (`~`) chars/4 heuristics, since
   there is no public tokenizer. They come from the nearest live "context"
   event snapshot observed during *this* process's run, if any.
-- **Provider/estimate gap**: only shown when the total is exact. It's the
-  difference between the exact API total and the sum of the estimated
-  categories -- shown explicitly rather than scaling the categories to
-  force a match.
+- **Provider/estimate gap**: the difference between the canonical row total
+  and the sum of estimated categories. It is exact when the API total is
+  exact and marked `~` otherwise. The gap is shown explicitly rather than
+  scaling categories to force a match.
 - **Available**: `contextWindow - total`. Shown as "context window unknown"
   when the model's context window hasn't been resolved yet.
 
@@ -108,9 +108,10 @@ event (`ctx.getSystemPrompt()` + `pi.getActiveTools()/getAllTools()` +
 `event.messages`, converted immediately to token counts and discarded).
 Older assistant turns (e.g. from a resumed session, or from before this
 extension was loaded) still get an exact **total** from their persisted
-`usage`, but no category breakdown -- the panel simply reports the
-unattributed total as `messages`/`toolCalls`/`toolResponses` with
-`systemPrompt`/`toolSchemas` at 0.
+`usage`, but no reliable category breakdown. Their known categories start
+at 0 and the exact total is reported as `Provider/estimate gap`; later
+estimated entries add only their own observable category deltas. Historical
+heuristics never replace the canonical API-anchored row total.
 
 ## Known limitations
 

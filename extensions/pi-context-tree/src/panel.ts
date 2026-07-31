@@ -200,11 +200,10 @@ export function renderPanel(label: PanelLabel, row: RowInfo, breakdown: ContextB
   lines.push(categoryLine("Tool calls", breakdown.toolCalls, breakdown.total, false));
   lines.push(categoryLine("Tool responses", breakdown.toolResponses, breakdown.total, false));
   lines.push(categoryLine("Messages", breakdown.messages, breakdown.total, false));
-  if (breakdown.totalExact) {
-    // The gap itself is a deterministic reconciliation of an exact total
-    // against estimated categories, so it is reported without "~".
-    lines.push(categoryLine("Provider/estimate gap", breakdown.gap, breakdown.total, true));
-  }
+  // Keep category estimates reconciled with the canonical row total. The
+  // gap is exact only when the API total is exact; otherwise mark it as an
+  // estimate like the row total itself.
+  lines.push(categoryLine("Provider/estimate gap", breakdown.gap, breakdown.total, breakdown.totalExact));
   lines.push(
     `Available: ${formatTokens(breakdown.available, breakdown.totalExact)}${breakdown.contextWindow > 0 ? "" : " (context window unknown)"}`,
   );

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { beforeEach } from "node:test";
 
-import { initTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { initTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionEntry, type Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 
 import { ContextTracker } from "../src/context-tracker.ts";
@@ -208,6 +208,43 @@ test("ContextTreeInspectorComponent: selecting a tool result behind parallel sib
   assert.ok(panel.includes("Selected interaction"));
   assert.ok(panel.includes("call arguments"));
   assert.ok(panel.includes("response"));
+});
+
+test("ContextTreeInspectorComponent: keeps the insights panel inside the terminal viewport", () => {
+  const entries: SessionEntry[] = [];
+  let parentId: string | null = null;
+  for (let i = 0; i < 78; i++) {
+    const entry = userEntry(parentId, `message ${i}`);
+    entries.push(entry);
+    parentId = entry.id;
+  }
+  const assistant = assistantEntry(parentId, {
+    toolCalls: [{ id: "call1", name: "read", arguments: { path: "large.ts" } }],
+  });
+  const result = toolResultEntry(assistant.id, {
+    toolCallId: "call1",
+    toolName: "read",
+    content: "large response",
+  });
+  entries.push(assistant, result);
+  parentId = result.id;
+
+  const tracker = new ContextTracker(() => 200_000);
+  tracker.sync(entries);
+  const component = new ContextTreeInspectorComponent({
+    tui: fakeTui(),
+    theme: fakeTheme(),
+    tree: buildTree(entries),
+    leafId: parentId,
+    tracker,
+    getEntries: () => entries,
+    getEntry: (id) => entries.find((entry) => entry.id === id),
+    onClose: () => {},
+  });
+
+  const lines = component.render(100);
+  assert.equal(lines[0]?.includes("Context Tree Inspector"), true);
+  assert.ok(lines.length <= 40, `rendered ${lines.length} lines into a 40-row terminal`);
 });
 
 test("ContextTreeInspectorComponent: panel reflects the highlighted row, not a fixed one", () => {

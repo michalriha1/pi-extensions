@@ -135,8 +135,12 @@ export class ContextTracker {
     const estimatedTotal = systemPrompt + toolSchemas + messages + toolCalls + toolResponses;
 
     const totalExact = record.exact;
-    const total = totalExact ? record.cumulative : estimatedTotal;
-    const gap = totalExact ? record.cumulative - estimatedTotal : 0;
+    // Row cumulative is the canonical path total. Category estimates are
+    // explanatory only and must never replace it, otherwise an estimated
+    // child after an API anchor can appear to jump to the (much larger)
+    // sum of historical heuristics before snapping back at the next API call.
+    const total = record.cumulative;
+    const gap = total - estimatedTotal;
     const contextWindow = record.contextWindow;
     const available = contextWindow > 0 ? contextWindow - total : 0;
 
@@ -228,20 +232,34 @@ export class ContextTracker {
             parent.exact = true;
             parent.delta = exactBefore - grandparentCumulative;
             parent.deltaExact = grandparentExact;
-            if (snapshot) {
-              parent.anchor = {
-                systemPrompt: snapshot.systemPromptTokens,
-                toolSchemas: snapshot.toolSchemaTokens,
-                toolCalls: snapshot.toolCallTokens,
-                toolResponses: snapshot.toolResponseTokens,
-                messages: snapshot.messagesTokens,
-                contextWindow: snapshot.contextWindow,
-                modelKey: snapshot.modelKey,
-                exactTotal: exactBefore,
-              };
-              if (snapshot.contextWindow > 0) parent.contextWindow = snapshot.contextWindow;
-              if (snapshot.modelKey) parent.modelKey = snapshot.modelKey;
-            }
+            parent.anchor = snapshot
+              ? {
+                  systemPrompt: snapshot.systemPromptTokens,
+                  toolSchemas: snapshot.toolSchemaTokens,
+                  toolCalls: snapshot.toolCallTokens,
+                  toolResponses: snapshot.toolResponseTokens,
+                  messages: snapshot.messagesTokens,
+                  contextWindow: snapshot.contextWindow,
+                  modelKey: snapshot.modelKey,
+                  exactTotal: exactBefore,
+                }
+              : {
+                  // Persisted API usage gives us the exact total but no
+                  // historical category split. Anchor here with zero known
+                  // categories instead of carrying unrelated heuristics from
+                  // the whole pre-runtime branch; the total becomes gap/
+                  // unattributed until live snapshots are available.
+                  systemPrompt: 0,
+                  toolSchemas: 0,
+                  toolCalls: 0,
+                  toolResponses: 0,
+                  messages: 0,
+                  contextWindow: parent.contextWindow,
+                  modelKey: parent.modelKey,
+                  exactTotal: exactBefore,
+                };
+            if (snapshot?.contextWindow && snapshot.contextWindow > 0) parent.contextWindow = snapshot.contextWindow;
+            if (snapshot?.modelKey) parent.modelKey = snapshot.modelKey;
           }
 
           cumulative = exactAfter;

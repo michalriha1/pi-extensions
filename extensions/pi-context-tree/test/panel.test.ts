@@ -69,12 +69,14 @@ test("renderPanel: negative deltas render with a minus sign", () => {
   assert.ok(deltaLine.includes("-900") || deltaLine.includes("~-900"));
 });
 
-test("renderPanel: gap row is only shown when the total is exact", () => {
+test("renderPanel: gap row reconciles both exact and estimated totals", () => {
   const exactLines = renderPanel({ entryKind: "user message", detail: "" }, row(), breakdown({ totalExact: true }));
-  assert.ok(exactLines.some((l) => l.includes("Provider/estimate gap")));
+  const exactGap = exactLines.find((line) => line.includes("Provider/estimate gap"))!;
+  assert.ok(!exactGap.includes("~50"));
 
   const estimatedLines = renderPanel({ entryKind: "user message", detail: "" }, row({ exact: false }), breakdown({ totalExact: false }));
-  assert.ok(!estimatedLines.some((l) => l.includes("Provider/estimate gap")));
+  const estimatedGap = estimatedLines.find((line) => line.includes("Provider/estimate gap"))!;
+  assert.ok(estimatedGap.includes("~50"));
 });
 
 test("renderPanel: a selected tool interaction gets its own explicit call/response lines", () => {
