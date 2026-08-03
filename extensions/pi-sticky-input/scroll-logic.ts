@@ -30,7 +30,6 @@ const RAPID_EVENT_WINDOW_MS = 45;
 const ACCELERATION_START_EVENT_COUNT = 9;
 const ACCELERATION_EVENTS_PER_STEP = 3;
 const ACCELERATION_CAP = 6;
-const SMALL_PENDING_THRESHOLD = 4;
 
 function clamp(value: number, minimum: number, maximum: number): number {
 	return Math.max(minimum, Math.min(value, maximum));
@@ -97,9 +96,7 @@ export function drainScrollFrame(state: ScrollState, bounds: ScrollBounds): Scro
 
 	const pendingMagnitude = Math.abs(pending);
 	const viewportCap = Math.max(1, Math.trunc(bounds.viewportRows) - 1);
-	const drainMagnitude = pendingMagnitude <= SMALL_PENDING_THRESHOLD
-		? pendingMagnitude
-		: Math.min(viewportCap, Math.max(SMALL_PENDING_THRESHOLD, Math.ceil(pendingMagnitude / 2)));
+	const drainMagnitude = Math.min(viewportCap, pendingMagnitude);
 	const requestedDelta = pending > 0 ? drainMagnitude : -drainMagnitude;
 	const maximum = maximumViewportTop(bounds);
 	const nextTop = clamp(reconciled.viewportTop + requestedDelta, 0, maximum);

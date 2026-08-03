@@ -71,7 +71,7 @@ test("bursts accumulate before a render", () => {
 	assert.equal(state.pendingDelta, -4);
 });
 
-test("large pending deltas drain adaptively across multiple frames", () => {
+test("large pending deltas drain immediately up to the viewport cap", () => {
 	let state = { ...createScrollState(), viewportTop: 50, followBottom: false, pendingDelta: 20 };
 	const applied: number[] = [];
 	while (state.pendingDelta !== 0) {
@@ -79,7 +79,7 @@ test("large pending deltas drain adaptively across multiple frames", () => {
 		applied.push(frame.appliedDelta);
 		state = frame.state;
 	}
-	assert.deepEqual(applied, [10, 5, 4, 1]);
+	assert.deepEqual(applied, [19, 1]);
 	assert.equal(state.viewportTop, 70);
 });
 
