@@ -79,8 +79,22 @@ test("large pending deltas drain adaptively across multiple frames", () => {
 		applied.push(frame.appliedDelta);
 		state = frame.state;
 	}
-	assert.deepEqual(applied, [10, 5, 3, 2]);
+	assert.deepEqual(applied, [10, 5, 4, 1]);
 	assert.equal(state.viewportTop, 70);
+});
+
+test("same-direction input never reduces the next frame's scroll speed", () => {
+	const withoutInput = {
+		...createScrollState(),
+		viewportTop: 50,
+		followBottom: false,
+		pendingDelta: 4,
+	};
+	const withInput = { ...withoutInput, pendingDelta: 5 };
+
+	const baseline = drainScrollFrame(withoutInput, BOUNDS);
+	const accelerated = drainScrollFrame(withInput, BOUNDS);
+	assert.ok(Math.abs(accelerated.appliedDelta) >= Math.abs(baseline.appliedDelta));
 });
 
 test("direction reversal discards old momentum and applies promptly", () => {

@@ -99,7 +99,7 @@ export function drainScrollFrame(state: ScrollState, bounds: ScrollBounds): Scro
 	const viewportCap = Math.max(1, Math.trunc(bounds.viewportRows) - 1);
 	const drainMagnitude = pendingMagnitude <= SMALL_PENDING_THRESHOLD
 		? pendingMagnitude
-		: Math.min(viewportCap, Math.max(2, Math.ceil(pendingMagnitude / 2)));
+		: Math.min(viewportCap, Math.max(SMALL_PENDING_THRESHOLD, Math.ceil(pendingMagnitude / 2)));
 	const requestedDelta = pending > 0 ? drainMagnitude : -drainMagnitude;
 	const maximum = maximumViewportTop(bounds);
 	const nextTop = clamp(reconciled.viewportTop + requestedDelta, 0, maximum);
