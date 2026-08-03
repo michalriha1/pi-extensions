@@ -22,6 +22,17 @@ export interface PanelLabel {
   toolInteraction?: ToolInteractionEstimate;
 }
 
+/** Context growth across one provider exchange, from the previous completed
+ * assistant response through the new request and response. */
+export interface ExchangeDelta {
+  request: number;
+  requestExact: boolean;
+  response: number;
+  responseExact: boolean;
+  total: number;
+  totalExact: boolean;
+}
+
 /** Looks up entries by id without retaining anything beyond the reference
  * the session already owns (mirrors `sessionManager.getEntry`). */
 export type EntryLookup = (id: string) => SessionEntry | undefined;
@@ -167,7 +178,7 @@ export function renderEmptyPanel(reason: string): string[] {
 }
 
 /** Build the panel lines for a selected row, given its RowInfo and full breakdown. */
-export function renderPanel(label: PanelLabel, row: RowInfo, breakdown: ContextBreakdown): string[] {
+export function renderPanel(label: PanelLabel, row: RowInfo, breakdown: ContextBreakdown, exchange?: ExchangeDelta): string[] {
   const lines: string[] = [];
   lines.push(`Context Tree Inspector — ${label.entryKind}${label.detail ? `: ${label.detail}` : ""}`);
 
@@ -178,40 +189,21 @@ export function renderPanel(label: PanelLabel, row: RowInfo, breakdown: ContextB
       `${bar(breakdown.total, breakdown.contextWindow)}`,
   );
 
-  const deltaStr = formatTokens(row.delta, row.deltaExact);
-  lines.push(`Row delta: ${deltaStr}  (cumulative ${formatTokens(row.cumulative, row.exact)})`);
-
   if (label.toolInteraction) {
     const { total, callArguments, response } = label.toolInteraction;
-    lines.push("");
-    // Separate, explicit estimated contributions for this one tool
-    // interaction (call + response), distinct from the aggregate
-    // categories below -- these are never exact (chars/4 heuristics).
-    lines.push(`Selected interaction ${formatTokens(total, false)}`);
-    lines.push(`  call arguments ${formatTokens(callArguments, false)}`);
+    // TreeSelectorComponent collapses a tool-only assistant entry and its
+    // result into one visible row, so present their combined delta once.
+    lines.push(`Interaction delta: ${formatTokens(total, false)}`);
+    lines.push(`  call + arguments ${formatTokens(callArguments, false)}`);
     lines.push(`  response ${formatTokens(response, false)}`);
+  } else if (exchange) {
+    lines.push(`Total delta: ${formatTokens(exchange.total, exchange.totalExact)}`);
+    lines.push(`  request ${formatTokens(exchange.request, exchange.requestExact)}`);
+    lines.push(`  response ${formatTokens(exchange.response, exchange.responseExact)}`);
+  } else {
+    const deltaStr = formatTokens(row.delta, row.deltaExact);
+    lines.push(`Row delta: ${deltaStr}`);
   }
 
-  lines.push("");
-  // Category token counts are always chars/4 heuristics -- never exact --
-  // even when the row's overall total is API-exact.
-  lines.push(categoryLine("System prompt", breakdown.systemPrompt, breakdown.total, false));
-  lines.push(categoryLine("Tool schemas", breakdown.toolSchemas, breakdown.total, false));
-  lines.push(categoryLine("Tool calls", breakdown.toolCalls, breakdown.total, false));
-  lines.push(categoryLine("Tool responses", breakdown.toolResponses, breakdown.total, false));
-  lines.push(categoryLine("Messages", breakdown.messages, breakdown.total, false));
-  // Keep category estimates reconciled with the canonical row total. The
-  // gap is exact only when the API total is exact; otherwise mark it as an
-  // estimate like the row total itself.
-  lines.push(categoryLine("Provider/estimate gap", breakdown.gap, breakdown.total, breakdown.totalExact));
-  lines.push(
-    `Available: ${formatTokens(breakdown.available, breakdown.totalExact)}${breakdown.contextWindow > 0 ? "" : " (context window unknown)"}`,
-  );
-
   return lines;
-}
-
-function categoryLine(label: string, value: number, total: number, exact: boolean): string {
-  const padded = label.padEnd(18, " ");
-  return `${padded} ${formatTokens(value, exact).padStart(9, " ")}  ${formatPercent(value, total).padStart(4, " ")}`;
 }

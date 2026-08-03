@@ -31,46 +31,28 @@ currently highlighted.
 ## What the panel shows
 
 ```
-Context Tree Inspector — tool result: read({"path":"a.ts"}) -> file contents
-Total: 12,345 / 200,000 (6%)  ████░░░░░░░░░░░░░░░░░░░░
-Row delta: ~230  (cumulative ~12,345)
-
-Selected interaction ~40
-  call arguments ~20
-  response ~20
-
-System prompt      ~1,200    10%
-Tool schemas         ~800     6%
-Tool calls           ~150     1%
-Tool responses      ~2,300   19%
-Messages            ~7,895   64%
-Provider/estimate gap  ~0     0%
-Available: 187,655
+Context Tree Inspector — assistant message: answer
+Total: 101,000 / 200,000 (51%)  ████████████░░░░░░░░░░░░
+Total delta: 1,000
+  request 100
+  response 900
 ```
 
 - **Total**: the row's cumulative context size. Shown without `~` when it
   comes directly from an API-reported `usage` value; estimated otherwise.
-- **Row delta**: this row's own contribution relative to its parent.
-  Negative deltas are expected and correct right after a compaction entry
-  (content was discarded from context). Unaffected by the tool-interaction
-  breakout below -- it always reflects the plain per-row accounting.
-- **Selected interaction** (tool-result rows only): a separate, explicit
-  estimate for *this one* tool interaction (the matching call's arguments
-  plus this result's response), broken into `call arguments` and
-  `response`. Always estimated (`~`); shown in addition to, not instead of,
-  the aggregate categories below. The matching call is found by walking
-  ancestors past any parallel tool-result siblings until the assistant
-  message that issued it is found.
-- **Categories** (system prompt / tool schemas / tool calls / tool
-  responses / messages): always estimated (`~`) chars/4 heuristics, since
-  there is no public tokenizer. They come from the nearest live "context"
-  event snapshot observed during *this* process's run, if any.
-- **Provider/estimate gap**: the difference between the canonical row total
-  and the sum of estimated categories. It is exact when the API total is
-  exact and marked `~` otherwise. The gap is shown explicitly rather than
-  scaling categories to force a match.
-- **Available**: `contextWindow - total`. Shown as "context window unknown"
-  when the model's context window hasn't been resolved yet.
+- **Total delta** (assistant rows): context growth since the previous
+  assistant response, split into **request** (new user/tool input added
+  before this provider call) and **response** (the assistant output). For
+  example, a 100-token question plus a 900-token answer displays a 1,000
+  total delta, with both contributions visible separately.
+- **Interaction delta** (tool rows): the complete visible interaction—the
+  matching call plus its result—broken into `call + arguments` and
+  `response`. Pi stores these in separate session entries but its tree hides
+  tool-only assistant entries and renders one combined row, so the panel
+  likewise presents one combined delta. Always estimated (`~`).
+- **Row delta** (other rows): this row's own contribution relative to its
+  parent. Negative deltas are expected after compaction because content was
+  discarded from context.
 
 ## Context accounting semantics
 
@@ -91,27 +73,15 @@ This extension maps it onto the session tree as follows:
 - A tool result is treated as one inspectable *interaction*: its matching
   call (found by walking ancestors through any parallel tool-result
   siblings back to the assistant message that issued it) plus its own
-  response. The panel shows their estimated contributions separately
-  (`call arguments` / `response`) so the two are never conflated, without
-  changing the plain per-row cumulative/delta accounting above.
+  response. Because Pi displays those entries as one tool row, the panel
+  shows one interaction delta with separate `call + arguments` / `response`
+  contributions.
 - Compaction entries intentionally produce **negative** deltas: the summary
   plus whatever was kept (`retainedTail`, or the span from
   `firstKeptEntryId` onward) replaces everything that was summarized away.
 - Branch-summary entries need no special handling: their tree parent is
   already the common ancestor, so the abandoned branch's tokens are
   naturally excluded from their cumulative total.
-
-Live category detail (system prompt / tool schema / message / tool-call /
-tool-response split) is only available for provider requests **observed
-during this process's run** -- captured cheaply on Pi's public `"context"`
-event (`ctx.getSystemPrompt()` + `pi.getActiveTools()/getAllTools()` +
-`event.messages`, converted immediately to token counts and discarded).
-Older assistant turns (e.g. from a resumed session, or from before this
-extension was loaded) still get an exact **total** from their persisted
-`usage`, but no reliable category breakdown. Their known categories start
-at 0 and the exact total is reported as `Provider/estimate gap`; later
-estimated entries add only their own observable category deltas. Historical
-heuristics never replace the canonical API-anchored row total.
 
 ## Known limitations
 
@@ -121,9 +91,6 @@ heuristics never replace the canonical API-anchored row total.
   fork or monkey-patch installed Pi. So cumulative/delta figures are shown
   for the **highlighted row only**, in the panel above the tree, not as a
   suffix on every visible row.
-- Category breakdowns (system prompt / tool schemas / etc.) are only as
-  good as the live snapshots observed during the current process. Nothing
-  is persisted across restarts, by design (`Runtime memory only`).
 - Model/tool-schema token estimates use the same chars/4 heuristic Pi's own
   `estimateTokens` uses; they are not run through a real tokenizer.
 

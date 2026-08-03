@@ -86,7 +86,7 @@ test("/context-tree notifies when the session has no entries yet", async () => {
   assert.match(notifications[0]!, /No entries/);
 });
 
-test('"context" event feeds the module-private tracker end-to-end through to the panel', async () => {
+test('"context" event category details remain hidden from the panel', async () => {
   const harness = new ExtensionHarness();
   harness.activeToolNames = ["read"];
   harness.allTools = [{ name: "read", description: "Read a file", parameters: { type: "object" } }];
@@ -139,7 +139,8 @@ test('"context" event feeds the module-private tracker end-to-end through to the
   // before assistant1's request); move selection up to see it reflected.
   capturedComponent!.handleInput("\x1b[A");
   const panel = capturedComponent!.render(100).join("\n");
-  assert.ok(panel.includes("100"), "system prompt tokens observed live via the \"context\" event should appear in the panel");
+  assert.ok(panel.includes("Total: 1,000"), "the selected point should retain its exact context total");
+  assert.ok(!panel.includes("System prompt"), "captured category details should not clutter the panel");
 });
 
 test("ContextTreeInspectorComponent: Enter never navigates/closes; Escape closes", () => {
@@ -174,7 +175,7 @@ test("ContextTreeInspectorComponent: Enter never navigates/closes; Escape closes
   assert.equal(closed, true, "Escape must close the inspector");
 });
 
-test("ContextTreeInspectorComponent: selecting a tool result behind parallel siblings still resolves its call and shows the interaction estimate", () => {
+test("ContextTreeInspectorComponent: selecting a tool result shows one combined interaction delta", () => {
   const user1 = userEntry(null, "go");
   const assistant1 = assistantEntry(user1.id, {
     usage: { input: 500, output: 30, cacheRead: 0, cacheWrite: 0 },
@@ -205,9 +206,10 @@ test("ContextTreeInspectorComponent: selecting a tool result behind parallel sib
   const panel = component.render(100).join("\n");
   assert.ok(panel.includes("grep"), "the panel title should resolve call2's name across the sibling chain");
   assert.ok(panel.includes("foo"), "the panel title should resolve call2's arguments across the sibling chain");
-  assert.ok(panel.includes("Selected interaction"));
-  assert.ok(panel.includes("call arguments"));
+  assert.ok(panel.includes("Interaction delta"));
+  assert.ok(panel.includes("call + arguments"));
   assert.ok(panel.includes("response"));
+  assert.ok(!panel.includes("Row delta"));
 });
 
 test("ContextTreeInspectorComponent: keeps the insights panel inside the terminal viewport", () => {
@@ -245,6 +247,38 @@ test("ContextTreeInspectorComponent: keeps the insights panel inside the termina
   const lines = component.render(100);
   assert.equal(lines[0]?.includes("Context Tree Inspector"), true);
   assert.ok(lines.length <= 40, `rendered ${lines.length} lines into a 40-row terminal`);
+});
+
+test("ContextTreeInspectorComponent: assistant exchange derives request, response, and total growth", () => {
+  const user1 = userEntry(null, "initial");
+  const assistant1 = assistantEntry(user1.id, {
+    text: "previous response",
+    usage: { input: 99_000, output: 1000, totalTokens: 100_000 },
+  });
+  const user2 = userEntry(assistant1.id, "small question");
+  const assistant2 = assistantEntry(user2.id, {
+    text: "large response",
+    usage: { input: 100_100, output: 900, totalTokens: 101_000 },
+  });
+  const entries = [user1, assistant1, user2, assistant2];
+  const tracker = new ContextTracker(() => 200_000);
+  tracker.sync(entries);
+
+  const component = new ContextTreeInspectorComponent({
+    tui: fakeTui(),
+    theme: fakeTheme(),
+    tree: buildTree(entries),
+    leafId: assistant2.id,
+    tracker,
+    getEntries: () => entries,
+    getEntry: (id) => entries.find((entry) => entry.id === id),
+    onClose: () => {},
+  });
+
+  const panel = component.render(100).join("\n");
+  assert.ok(panel.includes("Total delta: 1,000"));
+  assert.ok(panel.includes("request 100"));
+  assert.ok(panel.includes("response 900"));
 });
 
 test("ContextTreeInspectorComponent: panel reflects the highlighted row, not a fixed one", () => {

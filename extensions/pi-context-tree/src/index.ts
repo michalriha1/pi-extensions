@@ -14,13 +14,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
 import { ContextTracker } from "./context-tracker.ts";
-import { describeEntry, renderEmptyPanel, renderPanel } from "./panel.ts";
+import { describeEntry, renderEmptyPanel, renderPanel, type ExchangeDelta } from "./panel.ts";
 import { categorizeMessages, estimateSystemPromptTokens, estimateToolSchemaTokens, type CategorizableMessage } from "./token-estimate.ts";
-import type { ContextWindowResolver, RequestSnapshot } from "./types.ts";
+import type { ContextWindowResolver, RequestSnapshot, RowInfo } from "./types.ts";
 
 /** Worst-case panel height (exact tool interaction) and fixed chrome
  * rendered around TreeSelectorComponent's visible entry list. */
-const MAX_PANEL_LINES = 15;
+const MAX_PANEL_LINES = 7;
 const TREE_CHROME_LINES = 10;
 const MIN_TREE_ENTRY_LINES = 5;
 
@@ -192,6 +192,39 @@ export class ContextTreeInspectorComponent implements Component, Focusable {
     if (!row || !breakdown) return renderEmptyPanel("No context data for this entry yet.");
 
     const label = describeEntry(node.entry, this.getEntry);
-    return renderPanel(label, row, breakdown);
+    return renderPanel(label, row, breakdown, this.getExchangeDelta(node.entry, row));
+  }
+
+  /** Split an assistant row's growth into what was added to its request
+   * since the previous assistant response and what this response added. */
+  private getExchangeDelta(entry: SessionEntry, row: RowInfo): ExchangeDelta | undefined {
+    if (entry.type !== "message" || entry.message.role !== "assistant") return undefined;
+
+    const parent = entry.parentId ? this.tracker.getRowInfo(entry.parentId) : undefined;
+    let previousAssistant: RowInfo | undefined;
+    let ancestorId = entry.parentId;
+    while (ancestorId) {
+      const ancestor = this.getEntry(ancestorId);
+      if (!ancestor) break;
+      if (ancestor.type === "message" && ancestor.message.role === "assistant") {
+        previousAssistant = this.tracker.getRowInfo(ancestor.id);
+        break;
+      }
+      ancestorId = ancestor.parentId;
+    }
+
+    const baseline = previousAssistant?.cumulative ?? 0;
+    const baselineExact = previousAssistant?.exact ?? true;
+    const beforeResponse = parent?.cumulative ?? baseline;
+    const beforeResponseExact = parent?.exact ?? baselineExact;
+
+    return {
+      request: beforeResponse - baseline,
+      requestExact: beforeResponseExact && baselineExact,
+      response: row.cumulative - beforeResponse,
+      responseExact: row.exact && beforeResponseExact,
+      total: row.cumulative - baseline,
+      totalExact: row.exact && baselineExact,
+    };
   }
 }

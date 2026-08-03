@@ -57,10 +57,33 @@ test("renderPanel: exact totals are shown without a tilde, estimates with one", 
   assert.ok(estimatedTotalLine.includes("~1,000"));
 });
 
-test("renderPanel: category rows are always estimated, even when the total is exact", () => {
+test("renderPanel: omits category breakdown and redundant available capacity", () => {
   const lines = renderPanel({ entryKind: "user message", detail: "" }, row(), breakdown());
-  const systemLine = lines.find((l) => l.includes("System prompt"))!;
-  assert.ok(systemLine.includes("~100"));
+  const panel = lines.join("\n");
+  for (const hiddenLabel of [
+    "System prompt",
+    "Tool schemas",
+    "Tool calls",
+    "Tool responses",
+    "Messages",
+    "Provider/estimate gap",
+    "Available:",
+  ]) {
+    assert.ok(!panel.includes(hiddenLabel), `${hiddenLabel} should not be rendered`);
+  }
+});
+
+test("renderPanel: assistant exchange separates request, response, and total delta", () => {
+  const lines = renderPanel(
+    { entryKind: "assistant message", detail: "answer" },
+    row({ cumulative: 101_000, delta: 900 }),
+    breakdown({ total: 101_000 }),
+    { request: 100, requestExact: true, response: 900, responseExact: true, total: 1000, totalExact: true },
+  );
+  assert.ok(lines.some((line) => line === "Total delta: 1,000"));
+  assert.ok(lines.some((line) => line === "  request 100"));
+  assert.ok(lines.some((line) => line === "  response 900"));
+  assert.ok(!lines.some((line) => line.startsWith("Row delta:")));
 });
 
 test("renderPanel: negative deltas render with a minus sign", () => {
@@ -69,25 +92,17 @@ test("renderPanel: negative deltas render with a minus sign", () => {
   assert.ok(deltaLine.includes("-900") || deltaLine.includes("~-900"));
 });
 
-test("renderPanel: gap row reconciles both exact and estimated totals", () => {
-  const exactLines = renderPanel({ entryKind: "user message", detail: "" }, row(), breakdown({ totalExact: true }));
-  const exactGap = exactLines.find((line) => line.includes("Provider/estimate gap"))!;
-  assert.ok(!exactGap.includes("~50"));
-
-  const estimatedLines = renderPanel({ entryKind: "user message", detail: "" }, row({ exact: false }), breakdown({ totalExact: false }));
-  const estimatedGap = estimatedLines.find((line) => line.includes("Provider/estimate gap"))!;
-  assert.ok(estimatedGap.includes("~50"));
-});
-
-test("renderPanel: a selected tool interaction gets its own explicit call/response lines", () => {
+test("renderPanel: a tool row uses one combined interaction delta", () => {
   const lines = renderPanel(
     { entryKind: "tool result", detail: "read(...) -> ...", toolInteraction: { total: 8, callArguments: 5, response: 3 } },
     row(),
     breakdown(),
   );
-  assert.ok(lines.some((l) => l.includes("Selected interaction") && l.includes("~8")));
-  assert.ok(lines.some((l) => l.includes("call arguments") && l.includes("~5")));
+  assert.ok(lines.some((l) => l.includes("Interaction delta") && l.includes("~8")));
+  assert.ok(lines.some((l) => l.includes("call + arguments") && l.includes("~5")));
   assert.ok(lines.some((l) => l.includes("response") && l.includes("~3")));
+  assert.ok(!lines.some((l) => l.startsWith("Row delta:")));
+  assert.ok(!lines.some((l) => l.includes("Selected interaction")));
 });
 
 test("renderPanel: no tool-interaction lines are shown for non-tool-result rows", () => {
