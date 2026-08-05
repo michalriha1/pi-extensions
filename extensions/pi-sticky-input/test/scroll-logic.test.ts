@@ -62,6 +62,19 @@ test("sustained accepted input starts acceleration on the tenth event and ramps 
 	assert.equal(steps.at(-1), 6);
 });
 
+test("same-direction input retains momentum across a brief trackpad gesture gap", () => {
+	let state = createScrollState();
+	for (let index = 0; index < 22; index += 1) state = addWheelInput(state, 1, index * 10);
+
+	const beforeRetainedInput = state.pendingDelta;
+	state = addWheelInput(state, 1, 410);
+	assert.equal(state.pendingDelta - beforeRetainedInput, 6);
+
+	const beforeExpiredInput = state.pendingDelta;
+	state = addWheelInput(state, 1, 810);
+	assert.equal(state.pendingDelta - beforeExpiredInput, 1);
+});
+
 test("bursts accumulate before a render", () => {
 	let state = createScrollState();
 	state = addWheelInput(state, -1, 0);

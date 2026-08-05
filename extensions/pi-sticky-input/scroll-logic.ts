@@ -27,6 +27,7 @@ export interface ScrollFrameResult {
 
 const SAME_BATCH_WINDOW_MS = 5;
 const RAPID_EVENT_WINDOW_MS = 45;
+const MOMENTUM_RETENTION_WINDOW_MS = 300;
 const ACCELERATION_START_EVENT_COUNT = 9;
 const ACCELERATION_EVENTS_PER_STEP = 3;
 const ACCELERATION_CAP = 6;
@@ -57,9 +58,13 @@ export function addWheelInput(state: ScrollState, direction: ScrollDirection, no
 	const sameDirection = state.acceleration.lastDirection === direction;
 	if (sameDirection && gap >= 0 && gap < SAME_BATCH_WINDOW_MS) return state;
 
-	const rapidEventCount = sameDirection && gap >= 0 && gap <= RAPID_EVENT_WINDOW_MS
+	const continuingRapidInput = sameDirection && gap >= 0 && gap <= RAPID_EVENT_WINDOW_MS;
+	const retainingMomentum = sameDirection && gap >= 0 && gap <= MOMENTUM_RETENTION_WINDOW_MS;
+	const rapidEventCount = continuingRapidInput
 		? state.acceleration.rapidEventCount + 1
-		: 0;
+		: retainingMomentum
+			? state.acceleration.rapidEventCount
+			: 0;
 	const step = rapidEventCount < ACCELERATION_START_EVENT_COUNT
 		? 1
 		: Math.min(
