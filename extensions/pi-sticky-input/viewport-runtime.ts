@@ -138,6 +138,13 @@ function restoreOwnedDescriptor(
 	}
 }
 
+function isForwardingTuiReference(tui: TuiInternals): boolean {
+	// Pi 0.84 passes extensions a stable Proxy whose method getter creates a new
+	// forwarding function on every access. defineProperty targets the empty Proxy
+	// backing object, while assignment is explicitly forwarded to the live renderer.
+	return tui.render !== tui.render;
+}
+
 export class ViewportRuntime {
 	private readonly tui: TuiInternals;
 	private readonly captureWidget: Component;
@@ -150,6 +157,7 @@ export class ViewportRuntime {
 	private readonly originalRequestRender: TuiInternals["requestRender"];
 	private readonly originalStop: TuiInternals["stop"];
 	private readonly originalDrainInput: TerminalLike["drainInput"];
+	private readonly forwardingTuiReference: boolean;
 	private renderWrapper: TuiInternals["render"] | undefined;
 	private requestRenderWrapper: TuiInternals["requestRender"] | undefined;
 	private stopWrapper: TuiInternals["stop"] | undefined;
@@ -183,6 +191,7 @@ export class ViewportRuntime {
 		this.originalRequestRender = this.tui.requestRender;
 		this.originalStop = this.tui.stop;
 		this.originalDrainInput = this.tui.terminal.drainInput;
+		this.forwardingTuiReference = isForwardingTuiReference(this.tui);
 	}
 
 	install(): void {
@@ -216,24 +225,31 @@ export class ViewportRuntime {
 			return this.originalDrainInput.call(this.tui.terminal, maxMs, idleMs);
 		};
 
-		Object.defineProperty(this.tui, "render", {
-			configurable: true,
-			enumerable: false,
-			writable: true,
-			value: this.renderWrapper,
-		});
-		Object.defineProperty(this.tui, "requestRender", {
-			configurable: true,
-			enumerable: false,
-			writable: true,
-			value: this.requestRenderWrapper,
-		});
-		Object.defineProperty(this.tui, "stop", {
-			configurable: true,
-			enumerable: false,
-			writable: true,
-			value: this.stopWrapper,
-		});
+		if (this.forwardingTuiReference) {
+			// The stable Pi reference forwards assignment, but not defineProperty.
+			Reflect.set(this.tui, "render", this.renderWrapper);
+			Reflect.set(this.tui, "requestRender", this.requestRenderWrapper);
+			Reflect.set(this.tui, "stop", this.stopWrapper);
+		} else {
+			Object.defineProperty(this.tui, "render", {
+				configurable: true,
+				enumerable: false,
+				writable: true,
+				value: this.renderWrapper,
+			});
+			Object.defineProperty(this.tui, "requestRender", {
+				configurable: true,
+				enumerable: false,
+				writable: true,
+				value: this.requestRenderWrapper,
+			});
+			Object.defineProperty(this.tui, "stop", {
+				configurable: true,
+				enumerable: false,
+				writable: true,
+				value: this.stopWrapper,
+			});
+		}
 		Object.defineProperty(this.tui.terminal, "drainInput", {
 			configurable: true,
 			enumerable: false,
@@ -285,19 +301,27 @@ export class ViewportRuntime {
 		this.historyCache = undefined;
 		this.scrollState = resetScrollMotion(this.scrollState);
 
-		if (this.renderWrapper) {
-			restoreOwnedDescriptor(this.tui, "render", this.renderWrapper, this.previousRenderDescriptor);
-		}
-		if (this.requestRenderWrapper) {
-			restoreOwnedDescriptor(
-				this.tui,
-				"requestRender",
-				this.requestRenderWrapper,
-				this.previousRequestRenderDescriptor,
-			);
-		}
-		if (this.stopWrapper) {
-			restoreOwnedDescriptor(this.tui, "stop", this.stopWrapper, this.previousStopDescriptor);
+		if (this.forwardingTuiReference) {
+			// Proxy reads wrap methods, so wrapper identity cannot be checked. Restore
+			// the captured delegates through the same forwarding assignment path.
+			Reflect.set(this.tui, "render", this.originalRender);
+			Reflect.set(this.tui, "requestRender", this.originalRequestRender);
+			Reflect.set(this.tui, "stop", this.originalStop);
+		} else {
+			if (this.renderWrapper) {
+				restoreOwnedDescriptor(this.tui, "render", this.renderWrapper, this.previousRenderDescriptor);
+			}
+			if (this.requestRenderWrapper) {
+				restoreOwnedDescriptor(
+					this.tui,
+					"requestRender",
+					this.requestRenderWrapper,
+					this.previousRequestRenderDescriptor,
+				);
+			}
+			if (this.stopWrapper) {
+				restoreOwnedDescriptor(this.tui, "stop", this.stopWrapper, this.previousStopDescriptor);
+			}
 		}
 		if (this.drainInputWrapper) {
 			restoreOwnedDescriptor(

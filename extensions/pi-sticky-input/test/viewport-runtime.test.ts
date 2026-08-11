@@ -72,6 +72,8 @@ class FakeTui {
 	}
 }
 
+type TuiInternalsForTest = Pick<FakeTui, "children" | "terminal" | "render" | "requestRender" | "stop">;
+
 interface Fixture {
 	tui: FakeTui;
 	history: Leaf;
@@ -206,6 +208,33 @@ test("patch is instance-only and restores exact descriptors only while wrappers 
 	assert.equal(first.tui.render, replacement);
 	assert.equal(Object.hasOwn(first.tui, "requestRender"), false);
 	assert.equal(Object.hasOwn(first.tui, "stop"), false);
+});
+
+test("Pi 0.84 stable TUI references forward viewport patches to the live renderer", () => {
+	const tui = new FakeTui();
+	const history = new Leaf(Array.from({ length: 10 }, (_value, index) => `h${index}`));
+	const capture = new Leaf([]);
+	const editor = new Leaf(["editor"]);
+	tui.children = [history, new Group(), new Group(), new Group([editor]), new Group([capture]), new Leaf(["footer"])];
+	tui.focusedComponent = editor;
+
+	const reference = new Proxy({} as TuiInternalsForTest, {
+		get: (_target, property) => {
+			const value = Reflect.get(tui, property, tui) as unknown;
+			if (typeof value !== "function") return value;
+			return (...args: unknown[]) => Reflect.apply(value, tui, args);
+		},
+		set: (_target, property, value) => Reflect.set(tui, property, value, tui),
+	});
+	const runtime = createViewportRuntime(reference as unknown as TUI, capture);
+	runtime.install();
+
+	assert.deepEqual(tui.render(80).slice(0, 6), ["h4", "h5", "h6", "h7", "h8", "h9"]);
+	assert.equal(runtime.enqueueWheel(-1, 1_000), true);
+	assert.deepEqual(tui.render(80).slice(0, 6), ["h3", "h4", "h5", "h6", "h7", "h8"]);
+
+	runtime.dispose();
+	assert.equal(tui.render(80).length, 12);
 });
 
 test("pre-existing own descriptors are restored exactly and stop cleanup is idempotent", () => {
