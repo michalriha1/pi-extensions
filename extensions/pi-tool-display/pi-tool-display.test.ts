@@ -2030,7 +2030,7 @@ describe("runtime patch", () => {
 					},
 				},
 			} as unknown as ExtensionContext);
-			expect(toolsExpanded).toBe(false);
+			expect(toolsExpanded).toBeUndefined();
 			expect(ToolExecutionComponent.prototype.render).not.toBe(originalRender);
 			expect(AssistantMessageComponent.prototype.render).toBe(Container.prototype.render);
 			expect(handlers.has("message_end")).toBe(false);

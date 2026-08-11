@@ -96,7 +96,6 @@ export default function piToolDisplayExtension(pi: ExtensionAPI): void {
 		currentTheme = ctx.ui.theme;
 		patch = installToolCallGroupingPatch({ getTheme: () => currentTheme ?? getActiveTheme() });
 		patch.reset();
-		ctx.ui.setToolsExpanded(false);
 		if (!patch.installed && patch.reason) ctx.ui.notify(`Tool call grouping disabled: ${patch.reason}`, "warning");
 	});
 
