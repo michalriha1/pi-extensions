@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "../../../packages/ai/src/types.ts";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	AssistantMessageComponent,
 	createBashToolDefinition,
@@ -1904,7 +1904,8 @@ describe("runtime patch", () => {
 		const secondPatch = installToolCallGroupingPatch({ getTheme: () => undefined });
 		expect(secondPatch).toBe(firstPatch);
 		expect(ToolExecutionComponent.prototype.render).toBe(wrappedRender);
-		expect(AssistantMessageComponent.prototype.render).toBe(Container.prototype.render);
+		// Pi now owns this renderer; the patch only wraps updateContent.
+		expect(AssistantMessageComponent.prototype.render).toBe(originalAssistantRender);
 		expect(AssistantMessageComponent.prototype.updateContent).not.toBe(originalAssistantUpdateContent);
 		expect(Container.prototype.render).not.toBe(originalContainerRender);
 		expect(Container.prototype.addChild).not.toBe(originalAddChild);
@@ -2032,7 +2033,7 @@ describe("runtime patch", () => {
 			} as unknown as ExtensionContext);
 			expect(toolsExpanded).toBeUndefined();
 			expect(ToolExecutionComponent.prototype.render).not.toBe(originalRender);
-			expect(AssistantMessageComponent.prototype.render).toBe(Container.prototype.render);
+			expect(AssistantMessageComponent.prototype.render).toBe(originalAssistantRender);
 			expect(handlers.has("message_end")).toBe(false);
 
 			const parent = new Container();

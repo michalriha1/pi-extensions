@@ -1,23 +1,21 @@
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-function source(relativePath: string): string {
-	return fileURLToPath(new URL(relativePath, import.meta.url));
-}
+// Match the installed Pi runtime, not a sibling monorepo checkout.
+const piDirectory = process.env.PI_CODING_AGENT_DIR ?? "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent";
+const requireFromPi = createRequire(join(piDirectory, "package.json"));
+const directory = fileURLToPath(new URL(".", import.meta.url));
 
 export default {
-	test: { environment: "node", testTimeout: 30000 },
+	root: directory,
+	test: { environment: "node", testTimeout: 30000, include: ["*.test.ts"] },
 	resolve: {
 		alias: [
-			{ find: /^@earendil-works\/pi-coding-agent$/, replacement: source("./test-coding-agent.ts") },
-			{ find: /^@earendil-works\/pi-ai$/, replacement: source("../../../packages/ai/src/index.ts") },
-			{ find: /^@earendil-works\/pi-ai\/compat$/, replacement: source("../../../packages/ai/src/compat.ts") },
-			{ find: /^@earendil-works\/pi-ai\/oauth$/, replacement: source("../../../packages/ai/src/oauth.ts") },
-			{
-				find: /^@earendil-works\/pi-ai\/providers\/(.+)$/,
-				replacement: `${source("../../../packages/ai/src/providers")}/$1.ts`,
-			},
-			{ find: /^@earendil-works\/pi-agent-core$/, replacement: source("../../../packages/agent/src/index.ts") },
-			{ find: /^@earendil-works\/pi-tui$/, replacement: source("../../../packages/tui/src/index.ts") },
+			{ find: /^@earendil-works\/pi-coding-agent$/, replacement: join(directory, "test-coding-agent.ts") },
+			{ find: /^pi-test\/(.+)$/, replacement: `${join(piDirectory, "dist")}/$1.js` },
+			{ find: /^@earendil-works\/pi-tui$/, replacement: requireFromPi.resolve("@earendil-works/pi-tui") },
+			{ find: /^typebox$/, replacement: requireFromPi.resolve("typebox") },
 		],
 	},
 };
