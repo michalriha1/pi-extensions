@@ -8,6 +8,7 @@ import {
 import { Container, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	bashDisplayIntent,
+	CODEMODE_TOOL_NAME,
 	classifyToolPresentation,
 	type ExplorationGroupItem,
 	type ExplorationToolDescriptor,
@@ -730,11 +731,23 @@ class GroupingRuntime {
 	): string[] {
 		const state = semanticState(runtime);
 		const intentSummary = formatIntentCommandSummary(descriptor, INTENT_COMMAND_CHARACTER_LIMIT);
-		const status = state === "pending" ? "Running" : state === "success" ? "Ran" : intentSummary ? "Failed" : "Command failed";
+		// Script output starts with a wall-time header and is meant for the model;
+		// the expanded view (pi's own renderer) shows it in full.
+		const script = descriptor.name.toLowerCase() === CODEMODE_TOOL_NAME;
+		const status =
+			state === "pending"
+				? "Running"
+				: state === "success"
+					? "Ran"
+					: intentSummary
+						? "Failed"
+						: script
+							? "Script failed"
+							: "Command failed";
 		const color: StatusColor = state === "pending" ? "accent" : state === "success" ? "success" : "error";
 		const summary = intentSummary ? `— ${intentSummary}` : formatCommandSummary(descriptor);
 		const lines = [statusHeader(theme, status, summary, color, this.selectionLabels.get(component))];
-		if (!intentSummary) {
+		if (!intentSummary && !script) {
 			for (const output of this.normalizedOutput(runtime, 3)) {
 				lines.push(detailLine(theme, output, state === "failure"));
 			}

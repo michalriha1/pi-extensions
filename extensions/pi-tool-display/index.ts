@@ -1,6 +1,7 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { INTENT_PROMPT_GUIDELINE, injectIntentSchemas } from "./intent.ts";
+import { CODEMODE_INTENT_PROMPT_GUIDELINE, INTENT_PROMPT_GUIDELINE, injectIntentSchemas } from "./intent.ts";
+import { CODEMODE_TOOL_NAME } from "./logic.ts";
 import { installToolCallGroupingPatch } from "./patch.ts";
 
 const ACTIVE_THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
@@ -85,8 +86,12 @@ export default function piToolDisplayExtension(pi: ExtensionAPI): void {
 	// Intent costs tokens on every owned tool call, so it is only requested where
 	// the grouped renderer can actually show it.
 	pi.on("before_agent_start", (event, ctx) => {
-		if (ctx.mode !== "tui" || !applyIntentSchemas()) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${INTENT_PROMPT_GUIDELINE}` };
+		if (ctx.mode !== "tui") return;
+		const guidelines: string[] = [];
+		if (applyIntentSchemas()) guidelines.push(INTENT_PROMPT_GUIDELINE);
+		if (pi.getActiveTools().includes(CODEMODE_TOOL_NAME)) guidelines.push(CODEMODE_INTENT_PROMPT_GUIDELINE);
+		if (guidelines.length === 0) return;
+		return { systemPrompt: `${event.systemPrompt}\n\n${guidelines.join("\n\n")}` };
 	});
 
 	pi.on("session_start", (_event, ctx) => {

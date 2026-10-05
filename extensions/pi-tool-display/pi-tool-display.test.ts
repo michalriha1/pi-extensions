@@ -15,9 +15,15 @@ import { Container, Text, type TUI, visibleWidth } from "@earendil-works/pi-tui"
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import piToolDisplayExtension from "./index.ts";
-import { INTENT_PROMPT_GUIDELINE, injectIntentSchema, injectIntentSchemas } from "./intent.ts";
+import {
+	CODEMODE_INTENT_PROMPT_GUIDELINE,
+	INTENT_PROMPT_GUIDELINE,
+	injectIntentSchema,
+	injectIntentSchemas,
+} from "./intent.ts";
 import {
 	bashDisplayIntent,
+	codemodeDisplayIntent,
 	classifyShellCommand,
 	classifyToolPresentation,
 	type ExplorationToolDescriptor,
@@ -333,6 +339,56 @@ describe("exploration classification", () => {
 		expect(INTENT_PROMPT_GUIDELINE).toContain("intentText");
 		expect(INTENT_PROMPT_GUIDELINE).toContain("intentGroupText");
 		expect(INTENT_PROMPT_GUIDELINE.split("\n")).toHaveLength(1);
+	});
+
+	test("reads codemode intent from the leading script comment", () => {
+		const intent = (code: unknown) => codemodeDisplayIntent({ name: "codemode", args: { code } });
+		expect(intent("// Compare configs\nconst a = 1;")).toBe("Compare configs");
+		expect(intent('\n// @options: {"timeout_ms": 1000}\n\n//   Read   files  \nreturn 1;')).toBe("Read files");
+		expect(intent("//\n// Second line intent\nreturn 1;")).toBe("Second line intent");
+		expect(intent("const a = 1;\n// Too late")).toBeUndefined();
+		expect(intent('// @options: {"timeout_ms": 1000}\nreturn 1;')).toBeUndefined();
+		expect(intent(undefined)).toBeUndefined();
+		expect(codemodeDisplayIntent({ name: "bash", args: { code: "// nope" } })).toBeUndefined();
+	});
+
+	test("presents codemode as a command with its intent or a plain fallback", () => {
+		const description = "Run JavaScript that calls other tools to read, search, write, and delete";
+		const withIntent = { name: "codemode", description, isCustom: true, args: { code: "// Inspect files\nreturn 1;" } };
+		const withoutIntent = { name: "codemode", description, isCustom: true, args: { code: "return 1;" } };
+		expect(isExplorationTool(withIntent)).toBe(false);
+		expect(classifyToolPresentation(withIntent)).toBe("command");
+		expect(formatIntentCommandSummary(withIntent)).toBe("Inspect files");
+		expect(formatIntentCommandSummary(withoutIntent)).toBeUndefined();
+		expect(bashDisplayIntent(withIntent)).toBeUndefined();
+	});
+
+	test("appends the codemode guideline only while codemode is active", async () => {
+		type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
+		const systemPrompt = async (activeTools: string[]) => {
+			const handlers = new Map<string, Handler>();
+			piToolDisplayExtension({
+				on(event: string, handler: Handler) {
+					handlers.set(event, handler);
+				},
+				registerShortcut() {},
+				getAllTools: () => [],
+				getActiveTools: () => activeTools,
+			} as unknown as ExtensionAPI);
+			const result = (await handlers.get("before_agent_start")?.(
+				{ systemPrompt: "base" },
+				{ mode: "tui" } as unknown as ExtensionContext,
+			)) as { systemPrompt: string } | undefined;
+			return result?.systemPrompt;
+		};
+		expect(await systemPrompt(["codemode"])).toBe(`base\n\n${CODEMODE_INTENT_PROMPT_GUIDELINE}`);
+		expect(await systemPrompt(["read"])).toBeUndefined();
+	});
+
+	test("describes the codemode intent comment in its prompt guideline", () => {
+		expect(CODEMODE_INTENT_PROMPT_GUIDELINE).toContain("codemode");
+		expect(CODEMODE_INTENT_PROMPT_GUIDELINE).toContain("// <intent>");
+		expect(CODEMODE_INTENT_PROMPT_GUIDELINE.split("\n")).toHaveLength(1);
 	});
 
 	test("conservatively classifies direct custom tools from metadata tokens", () => {
@@ -1507,6 +1563,35 @@ describe("runtime patch", () => {
 			"",
 			"• Failed — Copy URL to clipboard · $ 123456789012345678901234567890…",
 		]);
+	});
+
+	test("renders codemode scripts on one line with intent and without script output", () => {
+		install();
+		const parent = new Container();
+		const definition = customDefinition("codemode", "codemode");
+		const withIntent = component(
+			"codemode",
+			"codemode-intent",
+			{ code: '// @options: {"timeout_ms": 1000}\n// Compare test configs\nreturn 1;' },
+			definition,
+		);
+		const withoutIntent = component("codemode", "codemode-plain", { code: "return 1;" }, definition);
+		parent.addChild(withIntent);
+		parent.addChild(new Text("boundary", 0, 0));
+		parent.addChild(withoutIntent);
+
+		expect(withIntent.render(120)).toEqual(["", "\u2022 Running \u2014 Compare test configs"]);
+		const output = "Script completed\nWall time 0.1 seconds\nOutput:\n1";
+		withIntent.updateResult({ content: [{ type: "text", text: output }], isError: false }, false);
+		expect(withIntent.render(120)).toEqual(["", "\u2022 Ran \u2014 Compare test configs"]);
+		withIntent.updateResult({ content: [{ type: "text", text: "Script failed" }], isError: true }, false);
+		expect(withIntent.render(120)).toEqual(["", "\u2022 Failed \u2014 Compare test configs"]);
+
+		expect(withoutIntent.render(120)).toEqual(["", "\u2022 Running codemode"]);
+		withoutIntent.updateResult({ content: [{ type: "text", text: output }], isError: false }, false);
+		expect(withoutIntent.render(120)).toEqual(["", "\u2022 Ran codemode"]);
+		withoutIntent.updateResult({ content: [{ type: "text", text: "Script failed" }], isError: true }, false);
+		expect(withoutIntent.render(120)).toEqual(["", "\u2022 Script failed codemode"]);
 	});
 
 	test("groups consecutive bash calls by shared intent and keeps failures inside", () => {

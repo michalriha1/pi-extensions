@@ -11,6 +11,8 @@ export type IntentKind = (typeof INTENT_KINDS)[number];
 
 export const PI_WEB_ACCESS_TOOLS = new Set(["web_search", "fetch_content", "get_search_content"]);
 export const SHELL_TOOL_NAMES = new Set(["bash", "hypa_shell"]);
+/** pi's built-in script tool; its only argument is the JavaScript source in `code`. */
+export const CODEMODE_TOOL_NAME = "codemode";
 export const EASY_MOTION_ALPHABET = "asdfghjklqwertyuiopzxcvbnm";
 
 export function generateSelectionLabels(count: number): string[] {
@@ -903,6 +905,9 @@ export function isExplorationTool(tool: ExplorationToolDescriptor): boolean {
 	// The model may always downgrade a call out of the exploration group; it may
 	// never upgrade one that this module proved to be a mutation.
 	if (toolIntentKind(tool.args) === "modify") return false;
+	// A script may call any tool, and its long description matches retrieval
+	// and mutation verbs alike, so metadata classification would be noise.
+	if (name === CODEMODE_TOOL_NAME) return false;
 	if (EXPLORATION_BUILT_INS.has(name) || PI_WEB_ACCESS_TOOLS.has(name)) return true;
 	if (SHELL_TOOL_NAMES.has(name)) {
 		const command = isRecord(tool.args) && typeof tool.args.command === "string" ? tool.args.command : undefined;
@@ -930,7 +935,7 @@ export function classifyToolPresentation(tool: ExplorationToolDescriptor): ToolP
 	if (isExplorationTool(tool)) return "exploration";
 	const name = tool.name.toLowerCase();
 	if (name === "edit" || name === "write") return "mutation";
-	if (SHELL_TOOL_NAMES.has(name)) return "command";
+	if (SHELL_TOOL_NAMES.has(name) || name === CODEMODE_TOOL_NAME) return "command";
 	if (name === "mcp" || tool.isCustom === true) return "remote";
 	return "original";
 }
@@ -1095,7 +1100,27 @@ export function bashDisplayIntent(tool: ExplorationToolDescriptor): BashDisplayI
 	return { text, ...(group ? { group } : {}), ...(groupText ? { groupText } : {}) };
 }
 
+/**
+ * Intent of a codemode script: its first `//` comment, when that comment is the
+ * first meaningful line. Blank lines and the `// @options:` line are skipped.
+ */
+export function codemodeDisplayIntent(tool: ExplorationToolDescriptor): string | undefined {
+	if (tool.name.toLowerCase() !== CODEMODE_TOOL_NAME) return undefined;
+	const code = isRecord(tool.args) && typeof tool.args.code === "string" ? tool.args.code : undefined;
+	if (code === undefined) return undefined;
+	for (const line of code.split(/\r\n|\r|\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed || /^\/\/\s*@options:/.test(trimmed)) continue;
+		const comment = /^\/\/+(.*)$/.exec(trimmed);
+		if (!comment) return undefined;
+		const text = cleanDisplayText(comment[1] ?? "");
+		if (text) return text;
+	}
+	return undefined;
+}
+
 export function formatCommandSummary(tool: ExplorationToolDescriptor, maxCommandCharacters?: number): string {
+	if (tool.name.toLowerCase() === CODEMODE_TOOL_NAME) return CODEMODE_TOOL_NAME;
 	const command = stringArg(tool.args, ["command"]) ?? "…";
 	if (maxCommandCharacters === undefined) return `$ ${command}`;
 	const characters = Array.from(command);
@@ -1109,6 +1134,8 @@ export function formatIntentCommandSummary(
 	tool: ExplorationToolDescriptor,
 	maxCommandCharacters?: number,
 ): string | undefined {
+	const scriptIntent = codemodeDisplayIntent(tool);
+	if (scriptIntent) return scriptIntent;
 	const intent = bashDisplayIntent(tool);
 	return intent ? `${intent.text} · ${formatCommandSummary(tool, maxCommandCharacters)}` : undefined;
 }

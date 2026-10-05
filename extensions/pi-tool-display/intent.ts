@@ -1,4 +1,5 @@
 import {
+	CODEMODE_TOOL_NAME,
 	INTENT_GROUP_FIELD,
 	INTENT_GROUP_TEXT_FIELD,
 	INTENT_KIND_FIELD,
@@ -22,6 +23,13 @@ export const INTENT_TOOL_NAMES: readonly string[] = ["bash"];
  * the guidance is chained onto the turn's system prompt instead.
  */
 export const INTENT_PROMPT_GUIDELINE = `Set \`${INTENT_KIND_FIELD}\` on every tool call that declares it: "explore" when the call only inspects state, "modify" when it changes state or has any other side effect, and "modify" when unsure. For every bash call, set \`${INTENT_TEXT_FIELD}\` to a concise neutral action phrase such as "Inspect repository status" or "Copy URL to clipboard". When two or more consecutive modifying bash calls serve one goal, also set the same short machine identifier in \`${INTENT_GROUP_FIELD}\` and the same neutral goal phrase in \`${INTENT_GROUP_TEXT_FIELD}\` on every call; keep \`${INTENT_TEXT_FIELD}\` specific to each command. Do not set group fields on exploration calls.`;
+
+/**
+ * Codemode's schema cannot carry intent fields: pi recognizes the tool by its
+ * schema object and some providers sample the script as raw JavaScript, not
+ * JSON. A leading comment is plain JavaScript, so it works everywhere.
+ */
+export const CODEMODE_INTENT_PROMPT_GUIDELINE = `Start every \`${CODEMODE_TOOL_NAME}\` script with a \`// <intent>\` comment line (after the optional \`// @options:\` line) that states the script's purpose as a concise neutral action phrase, for example \`// Compare test configs across packages\`.`;
 
 const INTENT_KIND_SCHEMA = {
 	type: "string",
