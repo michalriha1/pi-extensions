@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import type { ExtensionAPI, ExtensionContext, Skill } from "@earendil-works/pi-coding-agent";
 import extension from "../index.ts";
-import { discoverySkills, parsePolicy, PolicyReader, skillCommandName } from "../policy.ts";
+import { discoverySkills, parsePolicy, PolicyReader, skillCommandName, stateFor } from "../policy.ts";
 
 const installed = process.env.PI_TEST_RUNTIME ?? "/Users/michalriha/.pi/agent/install/releases/1.2.0/node_modules/@earendil-works/pi-coding-agent";
 const require = createRequire(join(installed, "package.json"));
@@ -65,6 +65,20 @@ test("merge, live edits, malformed retention/recovery/deletion, trust and cwd-on
   assert.equal(reader.refresh(child, true, f.global).get("a"), "off");
   writeFileSync(f.g, '{'); assert.equal(reader.refresh(f.cwd, false, f.global).get("a"), "off");
   assert.equal(new PolicyReader(() => {}).refresh(child, false, f.global).size, 0);
+});
+
+test("matches Claude directory and plugin-qualified keys", () => {
+  const policy = parsePolicy(JSON.stringify({ skillOverrides: {
+    "anthropic-skills:docx": "off",
+    "_cursor__teamcity": "name-only",
+    exact: "on", "plugin:exact": "off",
+  } }));
+  const dirSkill = { ...skill("teamcity"), filePath: "/s/_cursor__teamcity/SKILL.md" } as Skill;
+  assert.equal(stateFor(policy, "docx"), "off");
+  assert.equal(stateFor(policy, "teamcity", dirSkill.filePath), "name-only");
+  assert.equal(stateFor(policy, "exact"), "on");
+  assert.equal(stateFor(policy, "other", "/s/other/SKILL.md"), "on");
+  assert.deepEqual(discoverySkills([skill("docx"), dirSkill], policy).map(s => [s.name, s.description]), [["teamcity", ""]]);
 });
 
 test("command boundaries match installed Pi literal-space parser", () => {

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { discoverySkills, PolicyReader, skillCommandName } from "./policy.ts";
+import { discoverySkills, PolicyReader, skillCommandName, stateFor } from "./policy.ts";
 
 export default function claudeSkillPolicy(pi: ExtensionAPI) {
   const reader = new PolicyReader();
@@ -11,7 +11,10 @@ export default function claudeSkillPolicy(pi: ExtensionAPI) {
   pi.on("input", (event, ctx) => {
     const policy = refresh(ctx);
     const name = skillCommandName(event.text);
-    if (name !== undefined && policy.get(name) === "off") {
+    // Skill commands carry the SKILL.md path, enabling directory-name matching.
+    const path = name === undefined ? undefined : pi.getCommands?.()
+      .find((command) => command.source === "skill" && command.name === `skill:${name}`)?.sourceInfo?.path;
+    if (name !== undefined && stateFor(policy, name, path) === "off") {
       console.warn(`[pi-claude-skill-policy] /skill:${name} blocked by skillOverrides.`);
       return { action: "handled" };
     }

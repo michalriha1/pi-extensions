@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Skill } from "@earendil-works/pi-coding-agent";
 
 export type State = "on" | "name-only" | "user-invocable-only" | "off";
@@ -66,9 +66,30 @@ export class PolicyReader {
   }
 }
 
+/**
+ * Claude keys skills by directory name or plugin-qualified name (`plugin:skill`);
+ * Pi keys them by frontmatter name. Match the Pi name first, then the skill
+ * directory name, each against exact keys before `plugin:`-stripped keys.
+ */
+export function stateFor(policy: Policy, name: string, filePath?: string): State {
+  const ids = [name];
+  if (filePath) ids.push(basename(dirname(filePath)));
+  for (const id of ids) {
+    const exact = policy.get(id);
+    if (exact) return exact;
+  }
+  for (const id of ids) {
+    for (const [key, state] of policy) {
+      const colon = key.lastIndexOf(":");
+      if (colon !== -1 && key.slice(colon + 1) === id) return state;
+    }
+  }
+  return "on";
+}
+
 export function discoverySkills(skills: Skill[], policy: Policy): Skill[] {
   return skills.flatMap((skill) => {
-    const state = policy.get(skill.name) ?? "on";
+    const state = stateFor(policy, skill.name, skill.filePath);
     if (skill.disableModelInvocation || state === "off" || state === "user-invocable-only") return [];
     // Pi requires a string description; empty text preserves its native name/path rendering.
     return [state === "name-only" ? { ...skill, description: "" } : skill];
