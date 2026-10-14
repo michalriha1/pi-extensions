@@ -11,30 +11,22 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Text, type TUI, type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import piToolDisplayExtension from "./index.ts";
 import {
-	CODEMODE_INTENT_PROMPT_GUIDELINE,
-	INTENT_PROMPT_GUIDELINE,
-	injectIntentSchema,
-	injectIntentSchemas,
-} from "./intent.ts";
-import {
-	bashDisplayIntent,
-	codemodeDisplayIntent,
 	classifyShellCommand,
 	classifyToolPresentation,
 	type ExplorationToolDescriptor,
 	formatExplorationSummary,
-	formatIntentCommandSummary,
+	formatCompletedSummary,
+	formatCommandSummary,
 	formatRemoteActionSummary,
 	generateSelectionLabels,
 	groupExplorationItems,
 	isExplorationTool,
 	isReadOnlyShellCommand,
-	toolIntentKind,
 } from "./logic.ts";
 import { installToolCallGroupingPatch } from "./patch.ts";
 
@@ -258,138 +250,17 @@ describe("exploration classification", () => {
 		expect(classifyShellCommand(command)).toBe(verdict);
 	});
 
-	test("consults model intent only for undecidable shell commands", () => {
-		const undecidable = "cat data.json | python3 -c 'print(1)'";
-		expect(isExplorationTool({ name: "bash", args: { command: undecidable } })).toBe(false);
-		expect(isExplorationTool({ name: "bash", args: { command: undecidable, intentKind: "explore" } })).toBe(true);
-		expect(isExplorationTool({ name: "bash", args: { command: undecidable, intentKind: "modify" } })).toBe(false);
-		expect(isExplorationTool({ name: "bash", args: { command: undecidable, intentKind: "nonsense" } })).toBe(false);
-	});
 
-	test("never lets model intent override a proven verdict", () => {
-		expect(isExplorationTool({ name: "bash", args: { command: "rm -rf build", intentKind: "explore" } })).toBe(false);
-		expect(isExplorationTool({ name: "bash", args: { command: "git commit -m wip", intentKind: "explore" } })).toBe(
-			false,
-		);
-		expect(classifyToolPresentation({ name: "bash", args: { command: "rm -rf build", intentKind: "explore" } })).toBe(
-			"command",
-		);
-	});
 
-	test("lets model intent downgrade any call out of the exploration group", () => {
-		expect(isExplorationTool({ name: "read", args: { path: "a.ts" } })).toBe(true);
-		expect(isExplorationTool({ name: "read", args: { path: "a.ts", intentKind: "modify" } })).toBe(false);
-		expect(isExplorationTool({ name: "bash", args: { command: "ls -la", intentKind: "modify" } })).toBe(false);
-	});
 
-	test("reads the model intent kind and ignores unknown values", () => {
-		expect(toolIntentKind({ intentKind: "explore" })).toBe("explore");
-		expect(toolIntentKind({ intentKind: "delete" })).toBeUndefined();
-		expect(toolIntentKind(undefined)).toBeUndefined();
-	});
 
-	test("uses exploration intent text and limits its command summary", () => {
-		expect(
-			formatExplorationSummary({
-				name: "bash",
-				args: {
-					command: "12345678901234567890123456789012345",
-					intentKind: "explore",
-					intentText: "Inspect repository status",
-				},
-			}),
-		).toBe("Inspect repository status · $ 123456789012345678901234567890…");
-		expect(formatExplorationSummary({ name: "bash", args: { command: "git status", intentKind: "explore" } })).toBe(
-			"$ git status",
-		);
-		expect(formatExplorationSummary({ name: "read", args: { path: "a.ts" } })).toBe("Read a.ts");
-	});
 
-	test("injects an optional intent field into an object schema in place", () => {
-		const parameters = Type.Object({ command: Type.String() }) as unknown as Record<string, unknown>;
-		expect(injectIntentSchema(parameters)).toBe(true);
-		const properties = parameters.properties as Record<string, Record<string, unknown>>;
-		expect(properties.intentKind?.enum).toEqual(["explore", "modify"]);
-		expect(properties.intentText?.type).toBe("string");
-		expect(properties.intentGroup?.type).toBe("string");
-		expect(properties.intentGroupText?.type).toBe("string");
-		expect(parameters.required).toEqual(["command"]);
-		expect(injectIntentSchema(parameters)).toBe(true);
-		expect(injectIntentSchema(Type.String())).toBe(false);
-		expect(injectIntentSchema(undefined)).toBe(false);
-	});
 
-	test("injects only into listed built-in tools", () => {
-		const builtin = { source: "builtin" };
-		const tools = [
-			{ name: "bash", parameters: Type.Object({ command: Type.String() }), sourceInfo: builtin },
-			{ name: "read", parameters: Type.Object({ path: Type.String() }), sourceInfo: builtin },
-			{ name: "mcp", parameters: Type.Object({ tool: Type.String() }), sourceInfo: { source: "extension" } },
-		];
-		expect(injectIntentSchemas(tools)).toBe(true);
-		expect("intentKind" in (tools[0]?.parameters.properties ?? {})).toBe(true);
-		expect("intentKind" in (tools[1]?.parameters.properties ?? {})).toBe(false);
-		expect(injectIntentSchemas(tools, ["mcp"])).toBe(false);
-		expect("intentKind" in (tools[2]?.parameters.properties ?? {})).toBe(false);
-	});
 
-	test("describes the intent field in the prompt guideline", () => {
-		expect(INTENT_PROMPT_GUIDELINE).toContain("intentKind");
-		expect(INTENT_PROMPT_GUIDELINE).toContain("explore");
-		expect(INTENT_PROMPT_GUIDELINE).toContain("intentText");
-		expect(INTENT_PROMPT_GUIDELINE).toContain("intentGroupText");
-		expect(INTENT_PROMPT_GUIDELINE.split("\n")).toHaveLength(1);
-	});
 
-	test("reads codemode intent from the leading script comment", () => {
-		const intent = (code: unknown) => codemodeDisplayIntent({ name: "codemode", args: { code } });
-		expect(intent("// Compare configs\nconst a = 1;")).toBe("Compare configs");
-		expect(intent('\n// @options: {"timeout_ms": 1000}\n\n//   Read   files  \nreturn 1;')).toBe("Read files");
-		expect(intent("//\n// Second line intent\nreturn 1;")).toBe("Second line intent");
-		expect(intent("const a = 1;\n// Too late")).toBeUndefined();
-		expect(intent('// @options: {"timeout_ms": 1000}\nreturn 1;')).toBeUndefined();
-		expect(intent(undefined)).toBeUndefined();
-		expect(codemodeDisplayIntent({ name: "bash", args: { code: "// nope" } })).toBeUndefined();
-	});
 
-	test("presents codemode as a command with its intent or a plain fallback", () => {
-		const description = "Run JavaScript that calls other tools to read, search, write, and delete";
-		const withIntent = { name: "codemode", description, isCustom: true, args: { code: "// Inspect files\nreturn 1;" } };
-		const withoutIntent = { name: "codemode", description, isCustom: true, args: { code: "return 1;" } };
-		expect(isExplorationTool(withIntent)).toBe(false);
-		expect(classifyToolPresentation(withIntent)).toBe("command");
-		expect(formatIntentCommandSummary(withIntent)).toBe("Inspect files");
-		expect(formatIntentCommandSummary(withoutIntent)).toBeUndefined();
-		expect(bashDisplayIntent(withIntent)).toBeUndefined();
-	});
 
-	test("appends the codemode guideline only while codemode is active", async () => {
-		type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
-		const systemPrompt = async (activeTools: string[]) => {
-			const handlers = new Map<string, Handler>();
-			piToolDisplayExtension({
-				on(event: string, handler: Handler) {
-					handlers.set(event, handler);
-				},
-				registerShortcut() {},
-				getAllTools: () => [],
-				getActiveTools: () => activeTools,
-			} as unknown as ExtensionAPI);
-			const result = (await handlers.get("before_agent_start")?.(
-				{ systemPrompt: "base" },
-				{ mode: "tui" } as unknown as ExtensionContext,
-			)) as { systemPrompt: string } | undefined;
-			return result?.systemPrompt;
-		};
-		expect(await systemPrompt(["codemode"])).toBe(`base\n\n${CODEMODE_INTENT_PROMPT_GUIDELINE}`);
-		expect(await systemPrompt(["read"])).toBeUndefined();
-	});
 
-	test("describes the codemode intent comment in its prompt guideline", () => {
-		expect(CODEMODE_INTENT_PROMPT_GUIDELINE).toContain("codemode");
-		expect(CODEMODE_INTENT_PROMPT_GUIDELINE).toContain("// <intent>");
-		expect(CODEMODE_INTENT_PROMPT_GUIDELINE.split("\n")).toHaveLength(1);
-	});
 
 	test("conservatively classifies direct custom tools from metadata tokens", () => {
 		expect(isExplorationTool({ name: "jira_get_issue", label: "Get issue" })).toBe(true);
@@ -461,32 +332,11 @@ describe("exploration summaries", () => {
 	});
 });
 
-describe("bash intent summaries", () => {
-	test("reads clean intent fields for modifying and exploration calls", () => {
-		const tool = {
-			name: "bash",
-			args: {
-				command: "git push",
-				intentKind: "modify",
-				intentText: "Push branch",
-				intentGroup: "submit-git",
-				intentGroupText: "Submit changes to git",
-			},
-		};
-		expect(bashDisplayIntent(tool)).toEqual({
-			text: "Push branch",
-			group: "submit-git",
-			groupText: "Submit changes to git",
-		});
-		expect(formatIntentCommandSummary(tool)).toBe("Push branch · $ git push");
-		expect(formatIntentCommandSummary({ ...tool, args: { ...tool.args, intentKind: "explore" } })).toBe(
-			"Push branch · $ git push",
-		);
-	});
+describe("command summaries", () => {
 
 	test("limits bash command text to thirty characters", () => {
 		expect(
-			formatIntentCommandSummary({
+			formatCommandSummary({
 				name: "bash",
 				args: {
 					command: "12345678901234567890123456789012345",
@@ -494,7 +344,7 @@ describe("bash intent summaries", () => {
 					intentText: "Copy URL",
 				},
 			}, 30),
-		).toBe("Copy URL · $ 123456789012345678901234567890…");
+		).toBe("$ 123456789012345678901234567890…");
 	});
 });
 
@@ -539,7 +389,7 @@ describe("runtime patch", () => {
 		onCompactTextOutputNormalize?: () => void,
 		onCustomRowsCompute?: (target: object) => void,
 	): ReturnType<typeof installToolCallGroupingPatch> {
-		activePatch = installToolCallGroupingPatch({
+		activePatch = installToolCallGroupingPatch({ hidePending: false,
 			getTheme: () => undefined,
 			onParentRebuild,
 			onCompactTextOutputNormalize,
@@ -549,7 +399,151 @@ describe("runtime patch", () => {
 		return activePatch;
 	}
 
-	test("renders one grouped row per exploration call and transitions from Exploring to Explored", () => {
+	test.each([[true, false], [false, true], [true, true], [false, false]])(
+		"colors only the failure count red (first failed: %s, last failed: %s)",
+		(firstFailed, lastFailed) => {
+			activePatch = installToolCallGroupingPatch({ hidePending: false, getTheme: () => activeTheme });
+			const parent = new Container();
+			const first = component("read", "color-first", { path: "first.ts" });
+			const last = component("read", "color-last", { path: "last.ts" });
+			parent.addChild(first);
+			parent.addChild(last);
+			// Completion order must not override transcript order.
+			last.updateResult({ content: [], isError: lastFailed }, false);
+			first.updateResult({ content: [], isError: firstFailed }, false);
+			const failed = Number(firstFailed) + Number(lastFailed);
+			const summary = activeTheme.fg("muted", activeTheme.bold("Read 2 files"));
+			const suffix = failed ? activeTheme.fg("error", activeTheme.bold(` · ${failed} failed`)) : "";
+			expect(first.render(120)[1]).toBe(`• ${summary}${suffix}`);
+		},
+	);
+
+	test("counts all tool kinds in first-seen order without arguments or output", () => {
+		const names = ["read", "read", "bash", "hypa_shell", "bash", "edit", "write", "codemode", "grep", "find", "web_search", "ls", "ls", "mcp", "unknown"];
+		expect(formatCompletedSummary(names.map((name) => ({ name, args: { path: "secret" } })), 2)).toBe(
+			"Read 2 files, ran 3 shell commands, edited 1 file, wrote 1 file, ran 1 script, ran 3 searches, listed 2 directories, made 2 tool calls · 2 failed",
+		);
+	});
+
+	test("collapses mixed completed calls across thinking and tool-only rows, retaining pending output", () => {
+		install();
+		const parent = new Container();
+		const read = component("read", "mixed-read", { path: "secret.ts" });
+		const shell = component("bash", "mixed-shell", { command: "npm test" }, createBashToolDefinition(process.cwd()));
+		const edit = component("edit", "mixed-edit", { path: "pending.ts", oldText: "a", newText: "b" });
+		const remote = component("unknown", "mixed-unknown", { target: "secret" });
+		parent.addChild(read);
+		parent.addChild(thinkingComponent("mixed-shell", "bash"));
+		parent.addChild(shell);
+		parent.addChild(new AssistantMessageComponent(thinkingMessage(), true));
+		parent.addChild(edit);
+		parent.addChild(remote);
+		const pendingEdit = edit.render(120);
+		read.updateResult({ content: [{ type: "text", text: "secret output" }], isError: true }, false);
+		shell.updateResult({ content: [{ type: "text", text: "live output" }] }, true);
+		remote.updateResult({ content: [], isError: true }, false);
+		expect(read.render(120)).toEqual(["", "• Read 1 file, made 1 tool call · 2 failed"]);
+		expect(remote.render(120)).toEqual([]);
+		expect(shell.render(120)).toContain("  live output");
+		expect(edit.render(120)).toEqual(pendingEdit);
+		shell.updateResult({ content: [], isError: false }, false);
+		expect(read.render(120)).toEqual(["", "• Read 1 file, ran 1 shell command, made 1 tool call · 2 failed"]);
+		expect(shell.render(120)).toEqual([]);
+		expect(parent.render(120).join("\n")).not.toContain("secret");
+	});
+
+	test("does not collapse error-marked partial results before final completion", () => {
+		install();
+		const parent = new Container();
+		const read = component("read", "partial-failure", { path: "visible.ts" });
+		parent.addChild(read);
+		read.updateResult({ content: [], isError: true }, true);
+		expect(read.render(120)).toEqual(["", "• Exploring", "  └ Read visible.ts"]);
+		read.updateResult({ content: [], isError: true }, false);
+		expect(read.render(120)).toEqual(["", "• Read 1 file · 1 failed"]);
+	});
+
+	test("replays mixed sequences and rebuilds boundaries when assistant prose streams in", () => {
+		const parent = new Container();
+		const read = component("read", "boundary-read", { path: "one" });
+		const assistant = thinkingComponent("boundary-edit", "edit");
+		const edit = component("edit", "boundary-edit", { path: "two", edits: [] });
+		const last = component("bash", "boundary-shell", { command: "npm test" }, createBashToolDefinition(process.cwd()));
+		for (const tool of [read, edit, last]) tool.updateResult({ content: [] }, false);
+		parent.addChild(read);
+		parent.addChild(assistant);
+		parent.addChild(edit);
+		parent.addChild(new UserMessageComponent("next request"));
+		parent.addChild(last);
+		const patch = install();
+		parent.render(120);
+		expect(read.render(120)).toEqual(["", "• Read 1 file, edited 1 file"]);
+		expect(edit.render(120)).toEqual([]);
+		expect(last.render(120)).toEqual(["", "• Ran 1 shell command"]);
+		assistant.updateContent(thinkingMessage("boundary-edit", "edit", "Visible boundary"));
+		expect(read.render(120)).toEqual(["", "• Read 1 file"]);
+		expect(edit.render(120)).toEqual(["", "• Edited 1 file"]);
+		assistant.updateContent(thinkingMessage("boundary-edit", "edit"));
+		expect(read.render(120)).toEqual(["", "• Read 1 file, edited 1 file"]);
+		patch.reset();
+		parent.render(120);
+		expect(read.render(120)).toEqual(["", "• Read 1 file, edited 1 file"]);
+	});
+
+	test("moves summary leadership on out-of-order completion, expansion, removal and reparenting", () => {
+		const patch = install();
+		const parent = new Container();
+		const first = component("read", "leader-first", { path: "first" });
+		const second = component("bash", "leader-second", { command: "npm test" }, createBashToolDefinition(process.cwd()));
+		const third = component("write", "leader-third", { path: "third", content: "x" });
+		for (const tool of [first, second, third]) parent.addChild(tool);
+		second.updateResult({ content: [{ type: "text", text: "error details" }], isError: true }, false);
+		third.updateResult({ content: [] }, false);
+		expect(second.render(120)).toEqual(["", "• Ran 1 shell command, wrote 1 file · 1 failed"]);
+		first.updateResult({ content: [] }, false);
+		expect(second.render(120)).toEqual([]);
+		expect(first.render(120)).toEqual(["", "• Read 1 file, ran 1 shell command, wrote 1 file · 1 failed"]);
+		expect(patch.beginSelection()).toEqual(["a", "s", "d"]);
+		expect(first.render(120)[1]).toContain("[a] [s] [d]");
+		expect(patch.expandSelection("s")).toBe(true);
+		expect(second.render(120).join("\n")).toContain("error details");
+		expect(first.render(120)).toEqual(["", "• Read 1 file, wrote 1 file"]);
+		second.setExpanded(false);
+		parent.removeChild(first);
+		expect(second.render(120)).toEqual(["", "• Ran 1 shell command, wrote 1 file · 1 failed"]);
+		const other = new Container();
+		parent.removeChild(third);
+		other.addChild(third);
+		expect(second.render(120)).toEqual(["", "• Ran 1 shell command · 1 failed"]);
+		expect(third.render(120)).toEqual(["", "• Wrote 1 file"]);
+		other.clear();
+		expect(third.render(120)).toEqual(["", "• Wrote 1 file"]);
+	});
+
+	test("caches completed subsets during pending redraws and invalidates late failures", () => {
+		let computations = 0;
+		install(undefined, undefined, () => computations++);
+		const parent = new Container();
+		const first = component("read", "subset-first", { path: "first" });
+		const second = component("read", "subset-second", { path: "second" });
+		parent.addChild(first);
+		parent.addChild(second);
+		first.updateResult({ content: [] }, false);
+		const cached = first.render(120);
+		for (let i = 0; i < 128; i++) expect(first.render(120)).toBe(cached);
+		expect(computations).toBe(1);
+		second.updateResult({ content: [], isError: true }, false);
+		expect(first.render(120)).toEqual(["", "• Read 2 files · 1 failed"]);
+		expect(second.render(120)).toEqual([]);
+		expect(computations).toBe(2);
+		second.updateResult({ content: [], isError: false }, false);
+		expect(first.render(120)).toEqual(["", "• Read 2 files"]);
+		second.updateResult({ content: [] }, true);
+		expect(first.render(120)).toEqual(["", "• Read 1 file"]);
+		expect(second.render(120)).toEqual(["", "• Exploring", "  └ Read second"]);
+	});
+
+	test("renders pending exploration details and collapses completion to counts", () => {
 		install();
 		const parent = new Container();
 		const read = component("read", "read-1", { path: "packages/foo.ts" });
@@ -563,7 +557,7 @@ describe("runtime patch", () => {
 
 		read.updateResult({ content: [{ type: "text", text: "file" }], isError: false }, false);
 		grep.updateResult({ content: [{ type: "text", text: "match" }], isError: false }, false);
-		expect(read.render(120)[1]).toBe("• Explored");
+		expect(read.render(120)[1]).toBe("• Read 1 file, ran 1 search");
 	});
 
 	test("adds a sequential pending exploration to the existing group immediately", () => {
@@ -575,11 +569,11 @@ describe("runtime patch", () => {
 
 		const next = component("read", "read-next", { path: "next.ts" });
 		parent.addChild(next);
-		expect(previous.render(120)).toEqual(["", "• Exploring", "  ├ Read previous.ts", "  └ Read next.ts"]);
-		expect(next.render(120)).toEqual([]);
+		expect(previous.render(120)).toEqual(["", "• Read 1 file"]);
+		expect(next.render(120)).toEqual(["", "• Exploring", "  └ Read next.ts"]);
 
 		next.updateResult({ content: [{ type: "text", text: "next" }], isError: false }, false);
-		expect(previous.render(120)[1]).toBe("• Explored");
+		expect(previous.render(120)[1]).toBe("• Read 2 files");
 	});
 
 	test("adds a streamed exploration bash call to the existing group immediately", () => {
@@ -602,54 +596,17 @@ describe("runtime patch", () => {
 			intentKind: "explore",
 			intentText: "Wait and print working directory",
 		});
-		expect(previous.render(120)).toEqual([
-			"",
-			"• Exploring",
-			"  ├ Read previous.ts",
-			"  └ Wait and print working directory · $ sleep 4; pwd",
-		]);
-		expect(command.render(120)).toEqual([]);
+		expect(previous.render(120)).toEqual(["", "• Read 1 file"]);
+		expect(command.render(120)).toEqual(["", "• Running $ sleep 4; pwd"]);
 		command.updateResult({ content: [{ type: "text", text: "cwd" }], isError: false }, false);
 		parent.addChild(thinkingComponent("next", "read", "Done."));
-		expect(previous.render(120)).toEqual([
-			"",
-			"• Explored",
-			"  ├ Read previous.ts",
-			"  └ Wait and print working directory · $ sleep 4; pwd",
-		]);
+		expect(previous.render(120)).toEqual(["", "• Read 1 file, ran 1 shell command"]);
 		expect(command.render(120)).toEqual([]);
 	});
 
-	test("renders exploration bash intent with a limited command summary", () => {
-		install();
-		const parent = new Container();
-		const command = component(
-			"bash",
-			"bash-explore-intent",
-			{
-				command: "12345678901234567890123456789012345",
-				intentKind: "explore",
-				intentText: "Inspect repository status",
-			},
-			createBashToolDefinition(process.cwd()),
-		);
-		parent.addChild(command);
-
-		expect(command.render(120)).toEqual([
-			"",
-			"• Exploring",
-			"  └ Inspect repository status · $ 123456789012345678901234567890…",
-		]);
-		command.updateResult({ content: [{ type: "text", text: "clean" }], isError: false }, false);
-		expect(command.render(120)).toEqual([
-			"",
-			"• Explored",
-			"  └ Inspect repository status · $ 123456789012345678901234567890…",
-		]);
-	});
 
 	test("uses distinct lifecycle colors for pending, completed, and failed headers", () => {
-		activePatch = installToolCallGroupingPatch({ getTheme: () => activeTheme });
+		activePatch = installToolCallGroupingPatch({ hidePending: false, getTheme: () => activeTheme });
 		expect(activePatch.installed).toBe(true);
 		expect(activeTheme.getFgAnsi("accent")).not.toBe(activeTheme.getFgAnsi("text"));
 		expect(activeTheme.getFgAnsi("success")).not.toBe(activeTheme.getFgAnsi("text"));
@@ -692,20 +649,20 @@ describe("runtime patch", () => {
 		for (const tool of [read, list, edit, write, command, firstRemote, secondRemote]) {
 			tool.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
 		}
-		expect(read.render(120)[1]).toBe(activeTheme.fg("success", activeTheme.bold("• Explored")));
-		expect(edit.render(120)[1]).toBe(`• ${activeTheme.fg("success", activeTheme.bold("Modified"))}`);
+		expect(read.render(120)[1]).toBe(`• ${activeTheme.fg("muted", activeTheme.bold("Read 1 file, listed 1 directory"))}`);
+		expect(edit.render(120)[1]).toBe(`• ${activeTheme.fg("muted", activeTheme.bold("Edited 1 file, wrote 1 file"))}`);
 		expect(command.render(120)[1]).toBe(
-			`• ${activeTheme.fg("success", activeTheme.bold("Ran"))} $ npm run a-very-long-check-command`,
+			`• ${activeTheme.fg("muted", activeTheme.bold("Ran 1 shell command"))}`,
 		);
-		expect(firstRemote.render(120)[1]).toBe(`• ${activeTheme.fg("success", activeTheme.bold("Called"))}`);
+		expect(firstRemote.render(120)[1]).toBe(`• ${activeTheme.fg("muted", activeTheme.bold("Made 2 tool calls"))}`);
 
 		const truncatedCommandHeader = command.render(18)[1] ?? "";
 		expect(visibleWidth(truncatedCommandHeader)).toBeLessThanOrEqual(18);
-		expect(truncatedCommandHeader).toContain(activeTheme.getFgAnsi("success"));
+		expect(truncatedCommandHeader).toContain(activeTheme.getFgAnsi("muted"));
 
 		command.updateResult({ content: [{ type: "text", text: "failed" }], isError: true }, false);
 		expect(command.render(120)[1]).toBe(
-			`• ${activeTheme.fg("error", activeTheme.bold("Command failed"))} $ npm run a-very-long-check-command`,
+			`• ${activeTheme.fg("muted", activeTheme.bold("Ran 1 shell command"))}${activeTheme.fg("error", activeTheme.bold(" · 1 failed"))}`,
 		);
 	});
 
@@ -749,8 +706,8 @@ describe("runtime patch", () => {
 
 		install();
 		parent.render(120);
-		expect(first.render(120)).toEqual(["", "• Explored", "  └ Read first.ts"]);
-		expect(last.render(120)).toEqual(["", "• Explored", "  └ Read last.ts"]);
+		expect(first.render(120)).toEqual(["", "• Read 1 file"]);
+		expect(last.render(120)).toEqual(["", "• Read 1 file"]);
 	});
 
 	test("uses an actual non-exploration tool as an exploration boundary", () => {
@@ -907,7 +864,7 @@ describe("runtime patch", () => {
 
 		first.setExpanded(false);
 		second.setExpanded(false);
-		expect(first.render(120)).toEqual(["", "• Explored", "  ├ Read first.ts", "  └ Read second.ts"]);
+		expect(first.render(120)).toEqual(["", "• Read 2 files"]);
 		expect(second.render(120)).toEqual([]);
 	});
 
@@ -933,7 +890,7 @@ describe("runtime patch", () => {
 		expect(read.render(120).join("\n")).not.toContain("[a]");
 	});
 
-	test("splits an exploration group around a selected middle row", () => {
+	test("expands a selected completed call while summarizing remaining calls", () => {
 		const patch = install();
 		const parent = new Container();
 		const first = component("read", "read-1", { path: "first.ts" });
@@ -945,12 +902,12 @@ describe("runtime patch", () => {
 		}
 
 		expect(patch.beginSelection()).toEqual(["a", "s", "d"]);
-		expect(first.render(120)).toContain("  ├ [a] Read first.ts");
+		expect(first.render(120)).toContain("• Read 3 files [a] [s] [d]");
 		expect(patch.expandSelection("s")).toBe(true);
-		expect(first.render(120)).toEqual(["", "• Explored", "  └ Read first.ts"]);
+		expect(first.render(120)).toEqual(["", "• Read 2 files"]);
 		expect(middle.render(120).join("\n")).toContain("middle");
 		expect(middle.render(120).join("\n")).not.toContain("• Explored");
-		expect(last.render(120)).toEqual(["", "• Explored", "  └ Read last.ts"]);
+		expect(last.render(120)).toEqual([]);
 	});
 
 	test("labels grouped mutation and remote children", () => {
@@ -1082,7 +1039,7 @@ describe("runtime patch", () => {
 		expect(result.render(120)).toEqual([]);
 	});
 
-	test("keeps single mutation calls on two lines through pending, success, and failure states", () => {
+	test("keeps pending mutation statistics and summarizes success and failure", () => {
 		install();
 		const editParent = new Container();
 		const edit = component("edit", "edit-1", {
@@ -1100,22 +1057,17 @@ describe("runtime patch", () => {
 			},
 			false,
 		);
-		expect(edit.render(120)).toEqual(["", "• Edited src/file.ts", "  +2 -1 lines"]);
+		expect(edit.render(120)).toEqual(["", "• Edited 1 file"]);
 
 		const writeParent = new Container();
 		const write = component("write", "write-1", { path: "src/new.ts", content: "one\ntwo\n" });
 		writeParent.addChild(write);
 		expect(write.render(120)).toEqual(["", "• Writing src/new.ts", "  2 lines"]);
 		write.updateResult({ content: [{ type: "text", text: "Successfully wrote file" }], isError: false }, false);
-		expect(write.render(120)).toEqual(["", "• Wrote src/new.ts", "  2 lines"]);
+		expect(write.render(120)).toEqual(["", "• Wrote 1 file"]);
 
 		write.updateResult({ content: [{ type: "text", text: "permission denied" }], isError: true }, false);
-		expect(write.render(120)).toEqual([
-			"",
-			"• Write failed src/new.ts",
-			"  2 lines",
-			"  permission denied",
-		]);
+		expect(write.render(120)).toEqual(["", "• Wrote 1 file · 1 failed"]);
 	});
 
 	test("groups consecutive edits and keeps statistics on each item", () => {
@@ -1142,7 +1094,7 @@ describe("runtime patch", () => {
 
 		first.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
 		second.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
-		expect(first.render(120)[1]).toBe("• Edited");
+		expect(first.render(120)[1]).toBe("• Edited 2 files");
 	});
 
 	test("groups two edit batches across a tool-call-only assistant row", () => {
@@ -1234,7 +1186,7 @@ describe("runtime patch", () => {
 		expect(write.render(120)).toEqual(["", "• Writing new.ts", "  1 line"]);
 	});
 
-	test("uses Modified for mixed edit and write groups", () => {
+	test("counts mixed edit and write groups", () => {
 		install();
 		const parent = new Container();
 		const edit = component("edit", "edit-1", {
@@ -1248,16 +1200,11 @@ describe("runtime patch", () => {
 		expect(edit.render(120)[1]).toBe("• Modifying");
 		edit.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
 		write.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
-		expect(edit.render(120)).toEqual([
-			"",
-			"• Modified",
-			"  ├ Edited src/parser.ts (+1 -1)",
-			"  └ Wrote src/types.ts (2 lines)",
-		]);
+		expect(edit.render(120)).toEqual(["", "• Edited 1 file, wrote 1 file"]);
 		expect(write.render(120)).toEqual([]);
 	});
 
-	test("keeps failed edits in their group and labels them as failed", () => {
+	test("summarizes failed edits separately from pending edits", () => {
 		install();
 		const parent = new Container();
 		const first = component("edit", "edit-1", { path: "first.ts", edits: [{ oldText: "a", newText: "b" }] });
@@ -1271,15 +1218,14 @@ describe("runtime patch", () => {
 			"",
 			"• Editing",
 			"  ├ first.ts (+1 -1)",
-			"  ├ Failed failed.ts",
 			"  ├ third.ts (+1 -1)",
 			"  └ fourth.ts (+1 -1)",
 		]);
-		expect(failed.render(120)).toEqual([]);
+		expect(failed.render(120)).toEqual(["", "• Edited 1 file · 1 failed"]);
 		for (const mutation of [first, third, fourth]) {
 			mutation.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
 		}
-		expect(first.render(120)[1]).toBe("• Edited");
+		expect(first.render(120)[1]).toBe("• Edited 4 files · 1 failed");
 	});
 
 	test("caches complete settled group and standalone rows across 128 identical redraws", () => {
@@ -1302,9 +1248,9 @@ describe("runtime patch", () => {
 		}
 
 		const expected = parent.render(120);
-		expect(computations).toBe(2);
+		expect(computations).toBe(1);
 		for (let redraw = 0; redraw < 128; redraw += 1) expect(parent.render(120)).toEqual(expected);
-		expect(computations).toBe(2);
+		expect(computations).toBe(1);
 	});
 
 	test("keys complete row caches by width", () => {
@@ -1348,7 +1294,7 @@ describe("runtime patch", () => {
 		const after = first.render(120);
 		expect(computations).toBe(2);
 		expect(after).not.toBe(before);
-		expect(after.join("\n")).toContain("+2 -2");
+		expect(after).toEqual(["", "• Edited 2 files"]);
 	});
 
 	test("keeps partial complete rows live, then caches settled rows", () => {
@@ -1388,12 +1334,12 @@ describe("runtime patch", () => {
 		expect(computations).toBe(6);
 		read.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
 		const settledGroup = read.render(120);
-		expect(settledGroup[1]).toBe("• Explored");
+		expect(settledGroup[1]).toBe("• Read 1 file, listed 1 directory");
 		expect(read.render(120)).toBe(settledGroup);
 		expect(computations).toBe(7);
 	});
 
-	test("caches normalized output only for settled command results", () => {
+	test("never normalizes hidden completed command output", () => {
 		let normalizations = 0;
 		install(undefined, () => {
 			normalizations += 1;
@@ -1416,11 +1362,11 @@ describe("runtime patch", () => {
 		successful.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
 		failed.updateResult({ content: [{ type: "text", text: "failed" }], isError: true }, false);
 
-		expect(successful.render(120)).toContain("  done");
-		expect(successful.render(120)).toContain("  done");
-		expect(failed.render(120)).toContain("  failed");
-		expect(failed.render(120)).toContain("  failed");
-		expect(normalizations).toBe(2);
+		expect(successful.render(120)).toEqual(["", "• Ran 2 shell commands · 1 failed"]);
+		expect(successful.render(120)).toEqual(["", "• Ran 2 shell commands · 1 failed"]);
+		expect(failed.render(120)).toEqual([]);
+		expect(failed.render(120)).toEqual([]);
+		expect(normalizations).toBe(0);
 	});
 
 	test("keeps 128 idle redraws free of assistant updates, group rebuilds, and normalizations", () => {
@@ -1459,7 +1405,7 @@ describe("runtime patch", () => {
 		expect(parentRebuilds).toBe(5);
 		expect(assistantUpdates).toBe(1);
 		const settledOutput = parent.render(120);
-		expect(normalizations).toBe(1);
+		expect(normalizations).toBe(0);
 
 		parentRebuilds = 0;
 		normalizations = 0;
@@ -1524,116 +1470,15 @@ describe("runtime patch", () => {
 			"  … (+2 lines)",
 		]);
 		running.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
-		expect(running.render(120)).toEqual(["", "• Ran $ npm run check", "  done"]);
+		expect(running.render(120)).toEqual(["", "• Ran 1 shell command"]);
 
 		failed.updateResult({ content: [{ type: "text", text: "permission denied" }], isError: true }, false);
-		expect(failed.render(120)).toEqual([
-			"",
-			"• Command failed $ touch protected/file",
-			"  permission denied",
-		]);
+		expect(failed.render(120)).toEqual([]);
+		expect(running.render(120)).toEqual(["", "• Ran 2 shell commands · 1 failed"]);
 	});
 
-	test("renders standalone bash intent on one line without result output", () => {
-		install();
-		const parent = new Container();
-		const command = component(
-			"bash",
-			"bash-intent",
-			{
-				command: "12345678901234567890123456789012345",
-				intentKind: "modify",
-				intentText: "Copy URL to clipboard",
-			},
-			createBashToolDefinition(process.cwd()),
-		);
-		parent.addChild(command);
 
-		expect(command.render(120)).toEqual([
-			"",
-			"• Running — Copy URL to clipboard · $ 123456789012345678901234567890…",
-		]);
-		command.updateResult({ content: [{ type: "text", text: "copied" }], isError: false }, false);
-		expect(command.render(120)).toEqual([
-			"",
-			"• Ran — Copy URL to clipboard · $ 123456789012345678901234567890…",
-		]);
-		command.updateResult({ content: [{ type: "text", text: "clipboard unavailable" }], isError: true }, false);
-		expect(command.render(120)).toEqual([
-			"",
-			"• Failed — Copy URL to clipboard · $ 123456789012345678901234567890…",
-		]);
-	});
 
-	test("renders codemode scripts on one line with intent and without script output", () => {
-		install();
-		const parent = new Container();
-		const definition = customDefinition("codemode", "codemode");
-		const withIntent = component(
-			"codemode",
-			"codemode-intent",
-			{ code: '// @options: {"timeout_ms": 1000}\n// Compare test configs\nreturn 1;' },
-			definition,
-		);
-		const withoutIntent = component("codemode", "codemode-plain", { code: "return 1;" }, definition);
-		parent.addChild(withIntent);
-		parent.addChild(new Text("boundary", 0, 0));
-		parent.addChild(withoutIntent);
-
-		expect(withIntent.render(120)).toEqual(["", "\u2022 Running \u2014 Compare test configs"]);
-		const output = "Script completed\nWall time 0.1 seconds\nOutput:\n1";
-		withIntent.updateResult({ content: [{ type: "text", text: output }], isError: false }, false);
-		expect(withIntent.render(120)).toEqual(["", "\u2022 Ran \u2014 Compare test configs"]);
-		withIntent.updateResult({ content: [{ type: "text", text: "Script failed" }], isError: true }, false);
-		expect(withIntent.render(120)).toEqual(["", "\u2022 Failed \u2014 Compare test configs"]);
-
-		expect(withoutIntent.render(120)).toEqual(["", "\u2022 Running codemode"]);
-		withoutIntent.updateResult({ content: [{ type: "text", text: output }], isError: false }, false);
-		expect(withoutIntent.render(120)).toEqual(["", "\u2022 Ran codemode"]);
-		withoutIntent.updateResult({ content: [{ type: "text", text: "Script failed" }], isError: true }, false);
-		expect(withoutIntent.render(120)).toEqual(["", "\u2022 Script failed codemode"]);
-	});
-
-	test("groups consecutive bash calls by shared intent and keeps failures inside", () => {
-		install();
-		const parent = new Container();
-		const calls = [
-			["12345678901234567890123456789012345", "Run long command"],
-			["git commit -m submit", "Commit changes"],
-			["git push", "Push branch"],
-		].map(([command, intentText], index) =>
-			component(
-				"bash",
-				`git-${index}`,
-				{
-					command,
-					intentKind: "modify",
-					intentText,
-					intentGroup: "submit-git",
-					intentGroupText: "Submit changes to git",
-				},
-				createBashToolDefinition(process.cwd()),
-			),
-		);
-		for (const call of calls) parent.addChild(call);
-
-		expect(calls[0]?.render(120)).toEqual([
-			"",
-			"• Running — Submit changes to git",
-			"  ├ Run long command · $ 123456789012345678901234567890…",
-			"  ├ Commit changes · $ git commit -m submit",
-			"  └ Push branch · $ git push",
-		]);
-		expect(calls[1]?.render(120)).toEqual([]);
-		for (const call of calls) {
-			call.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
-		}
-		expect(calls[0]?.render(120)[1]).toBe("• Ran — Submit changes to git");
-		calls[1]?.updateResult({ content: [{ type: "text", text: "rejected" }], isError: true }, false);
-		expect(calls[0]?.render(120)[1]).toBe("• Failed — Submit changes to git");
-		expect(calls[0]?.render(120).join("\n")).not.toContain("rejected");
-		expect(calls[1]?.render(120)).toEqual([]);
-	});
 
 	test("renders remote MCP and custom actions individually through their lifecycle", () => {
 		install();
@@ -1657,12 +1502,8 @@ describe("runtime patch", () => {
 		expect(custom.render(120)).toEqual([]);
 		mcp.updateResult({ content: [{ type: "text", text: "connected" }], isError: false }, false);
 		custom.updateResult({ content: [{ type: "text", text: "remote rejected request" }], isError: true }, false);
-		expect(mcp.render(120)).toEqual(["", "• Called MCP connect jira"]);
-		expect(custom.render(120)).toEqual([
-			"",
-			"• Call failed Deploy service payments",
-			"  remote rejected request",
-		]);
+		expect(mcp.render(120)).toEqual(["", "• Made 2 tool calls · 1 failed"]);
+		expect(custom.render(120)).toEqual([]);
 	});
 
 	test("groups consecutive remote calls and includes Agent descriptions", () => {
@@ -1693,15 +1534,10 @@ describe("runtime patch", () => {
 
 		agent.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
 		deploy.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
-		expect(agent.render(120)).toEqual([
-			"",
-			"• Called",
-			"  ├ Agent Review provider behavior",
-			"  └ Deploy service payments",
-		]);
+		expect(agent.render(120)).toEqual(["", "• Called 1 subagent, made 1 tool call"]);
 	});
 
-	test("keeps failed remote calls standalone and splits surrounding groups", () => {
+	test("summarizes failed remote calls and retains pending remote grouping", () => {
 		install();
 		const parent = new Container();
 		const first = component("deploy_service", "remote-1", { target: "one" }, customDefinition());
@@ -1711,14 +1547,9 @@ describe("runtime patch", () => {
 		for (const remote of [first, failed, third, fourth]) parent.addChild(remote);
 		failed.updateResult({ content: [{ type: "text", text: "rejected" }], isError: true }, false);
 
-		expect(first.render(120)[1]).toBe("• Calling Deploy service one");
-		expect(failed.render(120)).toContain("• Call failed Deploy service two");
-		expect(third.render(120)).toEqual([
-			"",
-			"• Calling",
-			"  ├ Deploy service three",
-			"  └ Deploy service four",
-		]);
+		expect(first.render(120)).toEqual(["", "• Calling", "  ├ Deploy service one", "  ├ Deploy service three", "  └ Deploy service four"]);
+		expect(failed.render(120)).toContain("• Made 1 tool call · 1 failed");
+		expect(third.render(120)).toEqual([]);
 		expect(fourth.render(120)).toEqual([]);
 	});
 
@@ -1882,7 +1713,7 @@ describe("runtime patch", () => {
 		}) as unknown as Theme;
 		let currentTheme = themed("first");
 		let computations = 0;
-		activePatch = installToolCallGroupingPatch({
+		activePatch = installToolCallGroupingPatch({ hidePending: false,
 			getTheme: () => currentTheme,
 			onCustomRowsCompute: () => {
 				computations += 1;
@@ -1897,14 +1728,14 @@ describe("runtime patch", () => {
 		);
 		parent.addChild(command);
 		command.updateResult({ content: [{ type: "text", text: "done" }], isError: false }, false);
-		expect(command.render(120).join("\n")).toContain("first:success:");
-		expect(command.render(120).join("\n")).toContain("first:success:");
+		expect(command.render(120).join("\n")).toContain("first:muted:");
+		expect(command.render(120).join("\n")).toContain("first:muted:");
 		expect(computations).toBe(1);
 
 		currentTheme = themed("second");
 		const changed = command.render(120).join("\n");
-		expect(changed).toContain("second:success:");
-		expect(changed).not.toContain("first:success:");
+		expect(changed).toContain("second:muted:");
+		expect(changed).not.toContain("first:muted:");
 		expect(computations).toBe(2);
 	});
 
@@ -1938,7 +1769,7 @@ describe("runtime patch", () => {
 		expect(ToolExecutionComponent.prototype.setExpanded).toBe(originalSetExpanded);
 
 		let reloadComputations = 0;
-		activePatch = installToolCallGroupingPatch({
+		activePatch = installToolCallGroupingPatch({ hidePending: false,
 			getTheme: () => undefined,
 			onCustomRowsCompute: () => {
 				reloadComputations += 1;
@@ -1949,7 +1780,7 @@ describe("runtime patch", () => {
 		expect(reloadComputations).toBe(1);
 	});
 
-	test("caches settled failure splits as one complete group presentation", () => {
+	test("caches completed remote failures as one count summary", () => {
 		let computations = 0;
 		install(undefined, undefined, () => {
 			computations += 1;
@@ -1966,9 +1797,9 @@ describe("runtime patch", () => {
 			);
 		}
 
-		expect(remotes[0]?.render(120)).toContain("• Called Deploy service one");
-		expect(remotes[1]?.render(120)).toContain("• Call failed Deploy service two");
-		expect(remotes[2]?.render(120)).toContain("  └ Deploy service four");
+		expect(remotes[0]?.render(120)).toContain("• Made 4 tool calls · 1 failed");
+		expect(remotes[1]?.render(120)).toEqual([]);
+		expect(remotes[2]?.render(120)).toEqual([]);
 		expect(remotes[3]?.render(120)).toEqual([]);
 		expect(computations).toBe(1);
 	});
@@ -1986,7 +1817,7 @@ describe("runtime patch", () => {
 		const originalClear = Container.prototype.clear;
 		const firstPatch = install();
 		const wrappedRender = ToolExecutionComponent.prototype.render;
-		const secondPatch = installToolCallGroupingPatch({ getTheme: () => undefined });
+		const secondPatch = installToolCallGroupingPatch({ hidePending: false, getTheme: () => undefined });
 		expect(secondPatch).toBe(firstPatch);
 		expect(ToolExecutionComponent.prototype.render).toBe(wrappedRender);
 		// Pi now owns this renderer; the patch only wraps updateContent.
@@ -2074,10 +1905,11 @@ describe("runtime patch", () => {
 			commandParent.render(120);
 			const successHeader = read.render(120)[1] ?? "";
 			const errorHeader = command.render(120)[1] ?? "";
-			expect(successHeader).toContain("Explored");
+			expect(successHeader).toContain("Read 1 file");
 			expect(successHeader).toContain("\u001b[");
-			expect(successHeader).toContain(activeTheme.getFgAnsi("success"));
-			expect(errorHeader).toContain("Command failed");
+			expect(successHeader).toContain(activeTheme.getFgAnsi("muted"));
+			expect(errorHeader).toContain("Ran 1 shell command");
+			expect(errorHeader).toContain(" · 1 failed");
 			expect(errorHeader).toContain("\u001b[");
 			expect(errorHeader).toContain(activeTheme.getFgAnsi("error"));
 		} finally {
@@ -2168,21 +2000,23 @@ describe("runtime patch", () => {
 			const follower = component("ls", "main-ls", { path: "src" });
 			parent.addChild(leader);
 			parent.addChild(follower);
-			expect(leader.render(120).join("\n")).toContain("List src");
+			leader.updateResult({ content: [], isError: false }, false);
+			follower.updateResult({ content: [], isError: false }, false);
+			expect(leader.render(120).join("\n")).toContain("listed 1 directory");
 			expect(follower.render(120)).toEqual([]);
 
 			await subagentHandlers.get("session_start")?.(
 				{ type: "session_start", reason: "startup" },
 				subagentContext,
 			);
-			expect(leader.render(120).join("\n")).toContain("List src");
+			expect(leader.render(120).join("\n")).toContain("listed 1 directory");
 			expect(follower.render(120)).toEqual([]);
 			await subagentHandlers.get("session_shutdown")?.(
 				{ type: "session_shutdown", reason: "quit" },
 				subagentContext,
 			);
 			expect(ToolExecutionComponent.prototype.render).toBe(wrappedRender);
-			expect(leader.render(120).join("\n")).toContain("List src");
+			expect(leader.render(120).join("\n")).toContain("listed 1 directory");
 			expect(follower.render(120)).toEqual([]);
 		} finally {
 			await mainHandlers.get("session_shutdown")?.(
@@ -2243,7 +2077,7 @@ describe("runtime patch", () => {
 			await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
 			const parent = new Container();
 			const tools = Array.from({ length: 27 }, (_, index) => component("read", `read-${index}`, { path: `${index}.ts` }));
-			for (const tool of tools) parent.addChild(tool);
+			for (const tool of tools) { parent.addChild(tool); tool.updateResult({ content: [], isError: false }, false); }
 
 			expect(shortcutKey).toBe("ctrl+shift+l");
 			const selection = Promise.resolve(shortcut?.(ctx));
@@ -2293,11 +2127,41 @@ describe("runtime patch", () => {
 		piToolDisplayExtension(api);
 		await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
 		const parent = new Container();
-		parent.addChild(component("read", "read-1", { path: "first.ts" }));
+		const ready = component("read", "read-1", { path: "first.ts" });
+		ready.updateResult({ content: [], isError: false }, false);
+		parent.addChild(ready);
 		const selection = Promise.resolve(shortcut?.(ctx));
 		expect(selectionDone).toBeDefined();
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "reload" }, ctx);
 		await selection;
+	});
+
+
+	test("invalidates summary hit regions on resize and resets mouse expansion", () => {
+		const patch = install();
+		const parent = new Container();
+		const tool = component("read", "mouse-reset", { path: "file.ts" });
+		parent.addChild(tool);
+		tool.updateResult({ content: [{ type: "text", text: "full detail" }], isError: false }, false);
+		const event = (width: number): TuiMouseEvent => ({
+			type: "click", button: "left", x: 3, y: 1, screenX: 3, screenY: 1,
+			width, height: 2, shift: false, alt: false, ctrl: false,
+		});
+		const collapsed = parent.render(120);
+		expect(tool.handleMouse(event(80))).toBeUndefined();
+		tool.invalidate();
+		expect(tool.handleMouse(event(120))).toBeUndefined();
+		parent.render(80);
+		expect(tool.handleMouse(event(80))).toMatchObject({ handled: true, render: true });
+		expect(parent.render(80).join("\n")).toContain("full detail");
+		patch.reset();
+		expect(tool.handleMouse(event(80))).toBeUndefined();
+		expect(parent.render(120)).toEqual(collapsed);
+		expect(tool.handleMouse(event(120))).toMatchObject({ handled: true, render: true });
+		parent.render(120);
+		parent.removeChild(tool);
+		parent.addChild(tool);
+		expect(parent.render(120)).toEqual(collapsed);
 	});
 
 	test("uses every tool's original full renderer while expanded", () => {
@@ -2365,5 +2229,210 @@ describe("runtime patch", () => {
 			const lines = tool.render(18);
 			expect(lines.every((line) => visibleWidth(line) <= 18)).toBe(true);
 		}
+	});
+});
+
+describe("completed section interactions (default configuration)", () => {
+	const result = (isError = false) => ({ content: [{ type: "text" as const, text: Array.from({ length: 40 }, (_, i) => `output ${i}`).join("\n") }], isError });
+	function click(tool: ToolExecutionComponent, x: number, y = 1, width = 120) {
+		return tool.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height: 100, shift: false, alt: false, ctrl: false });
+	}
+	test("hides every pending and partial call, even expanded; only completed calls get keyboard labels", () => {
+		activePatch = installToolCallGroupingPatch({ getTheme: () => undefined });
+		const parent = new Container();
+		for (const name of ["read", "edit", "write", "bash", "codemode", "unknown"]) {
+			const tool = component(name, name, { command: "pwd", path: "a", code: "return 1" });
+			parent.addChild(tool);
+			tool.setExpanded(true);
+			expect(tool.render(120)).toEqual([]);
+			tool.updateResult(result(true), true);
+			expect(tool.render(120)).toEqual([]);
+		}
+		expect(parent.render(120)).toEqual([]);
+		expect(activePatch.beginSelection()).toEqual([]);
+	});
+
+	test("switches read/edit/shell/failure sections, uses native collapsed details, closes by section or detail", () => {
+		const nativeRender = ToolExecutionComponent.prototype.render;
+		const nativeMouse = ToolExecutionComponent.prototype.handleMouse;
+		activePatch = installToolCallGroupingPatch({ getTheme: () => activeTheme });
+		const parent = new Container();
+		parent.addChild(new Text("offset", 0, 0));
+		const tools = [component("read", "r", { path: "世界.ts" }), component("edit", "e", { path: "e", oldText: "a", newText: "b" }), component("bash", "b", { command: "false" }, createBashToolDefinition(process.cwd()))];
+		tools.forEach((tool, i) => { parent.addChild(tool); tool.updateResult(result(i !== 0), false); });
+		const native = tools.map(tool => nativeRender.call(tool, 120));
+		const summary = parent.render(120);
+		const first = tools[0]!;
+		// Container translates screen rows into component-local rows.
+		expect(parent.handleMouse({ type: "click", button: "left", x: 3, y: 2, screenX: 3, screenY: 2, width: 120, height: summary.length, shift: false, alt: false, ctrl: false })).toMatchObject({ handled: true });
+		parent.render(120);
+		expect(first.render(120).slice(2)).toEqual(native[0]);
+		expect(tools[1]!.render(120)).toEqual([]);
+		expect(tools[2]!.render(120)).toEqual([]);
+		const plain = "• Read 1 file, edited 1 file, ran 1 shell command · 2 failed";
+		for (const [segment, indices] of [["edited", [1]], ["ran", [2]], ["2 failed", [1, 2]]] as const) {
+			expect(click(first, plain.indexOf(segment))).toMatchObject({ handled: true });
+			parent.render(120);
+			tools.forEach((tool, i) => expect(i === 0 ? tool.render(120).slice(2) : tool.render(120)).toEqual((indices as readonly number[]).includes(i) ? native[i] : []));
+		}
+		expect(click(first, plain.indexOf("2 failed"))).toMatchObject({ handled: true });
+		expect(parent.render(120)).toEqual(summary);
+		click(first, plain.indexOf("ran")); parent.render(120);
+		expect(click(tools[2]!, 3, 2)).toMatchObject({ handled: true });
+		expect(parent.render(120)).toEqual(summary);
+		click(first, 3); parent.render(120);
+		expect(activePatch.beginSelection()).toEqual(["a", "s", "d"]);
+		expect(activePatch.expandSelection("a")).toBe(true);
+		expect(first.render(120)).toEqual(nativeRender.call(first, 120));
+		activePatch.restore();
+		expect(ToolExecutionComponent.prototype.handleMouse).toBe(nativeMouse);
+	});
+
+	test("uses visible columns under ANSI, excludes separators, padding, ellipsis and clipped sections", () => {
+		activePatch = installToolCallGroupingPatch({ getTheme: () => activeTheme });
+		const parent = new Container();
+		const read = component("read", "r", { path: "emoji-😀" });
+		const shell = component("bash", "b", { command: "false" });
+		for (const tool of [read, shell]) { parent.addChild(tool); tool.updateResult(result(true), false); }
+		parent.render(120);
+		for (const x of [0, 1, 13, 119]) expect(click(read, x)).toBeUndefined();
+		parent.render(16);
+		expect(click(read, 15, 1, 16)).toBeUndefined();
+		expect(click(read, 16, 1, 16)).toBeUndefined();
+		expect(click(read, 3, 1, 120)).toBeUndefined();
+		expect(click(read, 3, 1, 16)).toMatchObject({ handled: true });
+		parent.render(16);
+		expect(shell.render(16)).toEqual([]);
+		activePatch.reset();
+		expect(click(read, 3, 1, 16)).toBeUndefined();
+		expect(parent.render(16)).toHaveLength(2);
+	});
+
+	test("does not inject schemas/prompts and ignores legacy intent metadata", () => {
+		const events: string[] = [];
+		piToolDisplayExtension({ on: (name: string) => events.push(name), registerShortcut() {}, getAllTools() { throw new Error("must not inspect schemas"); } } as unknown as ExtensionAPI);
+		expect(events).not.toContain("before_agent_start");
+		expect(isExplorationTool({ name: "read", args: { intentKind: "modify" } })).toBe(true);
+		expect(isExplorationTool({ name: "bash", args: { command: "python3 -c 'print(1)'", intentKind: "explore" } })).toBe(false);
+		expect(formatExplorationSummary({ name: "bash", args: { command: "pwd", intentText: "Ignore me" } })).toBe("$ pwd");
+		expect(formatCommandSummary({ name: "codemode", args: { code: "// Ignore me\nreturn 1" } })).toBe("codemode");
+	});
+});
+
+describe("subagent summaries and hover", () => {
+	const done = (error = false) => ({ content: [{ type: "text" as const, text: "done" }], isError: error });
+	const move = (x: number, y = 1, width = 120): TuiMouseEvent => ({ type: "move", button: "none", x, y, screenX: x, screenY: y, width, height: 100, shift: false, alt: false, ctrl: false });
+	const plain = (text: string) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+
+	test.each(["Agent", "agent", "AGENT", "subagent", "SubAgent"])("counts %s as a launch", name => {
+		expect(formatCompletedSummary([{ name }])).toBe("Called 1 subagent");
+		expect(formatCompletedSummary([{ name }, { name }])).toBe("Called 2 subagents");
+	});
+	test.each(["AgentStatus", "MessageAgent", "StopAgent", "get_subagent_result", "launch_agent_maybe"])("does not infer launches from %s", name => {
+		expect(formatCompletedSummary([{ name }])).toBe("Made 1 tool call");
+	});
+	test("codemode containing agent calls remains a script", () => {
+		expect(formatCompletedSummary([{ name: "codemode", args: { code: 'await tools.Agent({})' } }])).toBe("Ran 1 script");
+	});
+	test("subagent category filters native collapsed previews independently of management and scripts", () => {
+		const native = ToolExecutionComponent.prototype.render;
+		activePatch = installToolCallGroupingPatch({ getTheme: () => undefined });
+		const parent = new Container();
+		const tools = ["Agent", "subagent", "AgentStatus", "codemode"].map(name => component(name, name, {}, customDefinition(name)));
+		tools.forEach(tool => { parent.addChild(tool); tool.updateResult(done(), false); });
+		expect(parent.render(120)).toEqual(["", "• Called 2 subagents, made 1 tool call, ran 1 script"]);
+		expect(tools[0]!.handleMouse({ ...move(3), type: "click", button: "left" })).toMatchObject({ handled: true });
+		parent.render(120);
+		expect(tools[0]!.render(120).slice(2)).toEqual(native.call(tools[0], 120));
+		expect(tools[1]!.render(120)).toEqual(native.call(tools[1], 120));
+		expect(tools[2]!.render(120)).toEqual([]);
+		expect(tools[3]!.render(120)).toEqual([]);
+	});
+	test("enter/change/leave, other component and blank area; no recompute on repeated moves", () => {
+		let computes = 0;
+		activePatch = installToolCallGroupingPatch({ getTheme: () => activeTheme, onCustomRowsCompute: () => computes++ });
+		const parent = new Container();
+		const tool = component("read", "hover", { path: "世界😀" });
+		const agent = component("Agent", "agent", {}, customDefinition("Agent"));
+		for (const t of [tool, agent]) { parent.addChild(t); t.updateResult(done(t === agent), false); }
+		parent.addChild(new Text("other transcript component", 0, 0));
+		const initial = parent.render(120);
+		expect(parent.handleMouse(move(3))).toMatchObject({ render: true });
+		let lines = parent.render(120);
+		expect(lines[1]).toContain(activeTheme.getFgAnsi("text") + "Read 1 file");
+		expect(lines[1]).toContain(activeTheme.getFgAnsi("muted") + ", called 1 subagent");
+		const afterEnter = computes;
+		expect(parent.handleMouse(move(4))).toBeUndefined();
+		parent.render(120);
+		expect(computes).toBe(afterEnter);
+		const agentX = plain(lines[1]!).indexOf("called");
+		expect(parent.handleMouse(move(agentX))).toMatchObject({ render: true });
+		lines = parent.render(120);
+		expect(lines[1]).not.toContain(activeTheme.getFgAnsi("text") + "Read");
+		expect(lines[1]).toContain(activeTheme.getFgAnsi("text") + "called 1 subagent");
+		expect(lines[1]).toContain(activeTheme.fg("error", activeTheme.bold(" · 1 failed")));
+		const failureX = plain(lines[1]!).indexOf("1 failed");
+		parent.handleMouse(move(failureX));
+		lines = parent.render(120);
+		expect(lines[1]).toContain(activeTheme.getFgAnsi("text") + "1 failed");
+		expect(lines[1]).not.toContain("\x1b[4m");
+		expect(lines.every(line => visibleWidth(line) <= 120)).toBe(true);
+		for (const event of [move(3, 2), move(110), move(3, 99), move(13)]) {
+			parent.handleMouse(move(3)); parent.render(120);
+			expect(parent.handleMouse(event)).toMatchObject({ render: true });
+			expect(parent.render(120)).toEqual(initial);
+		}
+		parent.handleMouse(move(3)); parent.render(120);
+		const narrow = parent.render(10);
+		expect(narrow.every(line => visibleWidth(line) <= 10)).toBe(true);
+		expect(narrow.join("")).not.toContain(activeTheme.getFgAnsi("text"));
+		expect(parent.handleMouse(move(9, 1, 10))).toBeUndefined(); // ellipsis
+		expect(parent.handleMouse(move(3, 1, 10))).toMatchObject({ render: true });
+		parent.render(10);
+		activePatch.reset();
+		expect(parent.render(10).join("")).not.toContain(activeTheme.getFgAnsi("text"));
+	});
+	test("owning fullscreen router clears outside containers, on wheel/keyboard scroll/resize, and restores instance hooks", () => {
+		let renders = 0;
+		let scrollTop = 0;
+		const ui = {
+			terminal: { columns: 120, rows: 40 },
+			getPrimaryScrollView: () => ({ scrollTop }),
+			requestRender() { renders++; },
+			createMouseEvent: (_type: string, _button: number, x: number, y: number) => move(x, y),
+		};
+		const originalMouse = ui.createMouseEvent;
+		const originalRender = ui.requestRender;
+		const originalContainerMouse = Container.prototype.handleMouse;
+		activePatch = installToolCallGroupingPatch({ getTheme: () => activeTheme });
+		const tool = new ToolExecutionComponent("read", "owned", { path: "x" }, {}, undefined, ui as unknown as TUI, process.cwd());
+		tool.updateResult(done(), false);
+		tool.render(120);
+		const enter = () => { tool.handleMouse(move(3)); tool.render(120); };
+		enter();
+		const count = renders;
+		ui.createMouseEvent("move", 35, 4, 1);
+		expect(renders).toBe(count);
+		ui.createMouseEvent("move", 35, 3, 35); // outside transcript entirely
+		expect(renders).toBe(count + 1);
+		expect(tool.render(120).join("")).not.toContain(activeTheme.getFgAnsi("text"));
+		enter(); scrollTop++; ui.requestRender();
+		expect(tool.render(120).join("")).not.toContain(activeTheme.getFgAnsi("text"));
+		enter(); ui.terminal.rows++; ui.requestRender();
+		expect(tool.render(120).join("")).not.toContain(activeTheme.getFgAnsi("text"));
+		for (const event of [{ ...move(3), type: "wheel" as const, wheelDelta: 1 }, { ...move(3), type: "drag" as const, button: "left" as const }, { ...move(3), type: "click" as const, button: "right" as const }]) {
+			enter();
+			expect(tool.handleMouse(event)).toBeUndefined();
+			expect(tool.render(120).join("")).not.toContain(activeTheme.getFgAnsi("text"));
+		}
+		activePatch.reset();
+		expect(ui.createMouseEvent).toBe(originalMouse);
+		expect(ui.requestRender).toBe(originalRender);
+		tool.render(120); // reattach after reset
+		expect(ui.createMouseEvent).not.toBe(originalMouse);
+		activePatch.restore(); activePatch.restore();
+		expect(ui.createMouseEvent).toBe(originalMouse);
+		expect(ui.requestRender).toBe(originalRender);
+		expect(Container.prototype.handleMouse).toBe(originalContainerMouse);
 	});
 });

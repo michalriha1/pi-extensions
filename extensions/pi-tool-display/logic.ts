@@ -1,13 +1,38 @@
-export const EXPLORATION_BUILT_INS = new Set(["read", "grep", "find", "ls"]);
+/** Explicit launch tools: installed pi-subagents-lite and Pi's bundled subagent example.
+ * Management tools and scripts (even scripts invoking agents) are not launches.
+ * Counts visible launch calls, not tasks inside a parallel/chain call.
+ */
+export function isSubagentLaunch(name: string): boolean {
+	const normalized = name.toLowerCase();
+	return normalized === "agent" || normalized === "subagent";
+}
 
-/** Model-written field injected into owned tool schemas by `intent.ts`. */
-export const INTENT_KIND_FIELD = "intentKind";
-export const INTENT_TEXT_FIELD = "intentText";
-export const INTENT_GROUP_FIELD = "intentGroup";
-export const INTENT_GROUP_TEXT_FIELD = "intentGroupText";
-export const INTENT_COMMAND_CHARACTER_LIMIT = 30;
-export const INTENT_KINDS = ["explore", "modify"] as const;
-export type IntentKind = (typeof INTENT_KINDS)[number];
+/** Counts calls, not unique paths; never includes arguments or result content. */
+export function formatCompletedSummary(tools: readonly ExplorationToolDescriptor[], failed = 0): string {
+	const counts = new Map<string, { verb: string; noun: string; count: number }>();
+	for (const tool of tools) {
+		const name = tool.name.toLowerCase();
+		const [verb, noun] = name === "read" ? ["read", "file"]
+			: SHELL_TOOL_NAMES.has(name) ? ["ran", "shell command"]
+			: name === "edit" ? ["edited", "file"]
+			: name === "write" ? ["wrote", "file"]
+			: isSubagentLaunch(name) ? ["called", "subagent"]
+			: name === CODEMODE_TOOL_NAME ? ["ran", "script"]
+			: name === "grep" || name === "find" || name === "web_search" ? ["ran", "search"]
+			: name === "ls" ? ["listed", "directory"]
+			: ["made", "tool call"];
+		const key = `${verb}:${noun}`;
+		const count = counts.get(key) ?? { verb, noun, count: 0 };
+		count.count += 1;
+		counts.set(key, count);
+	}
+	const summary = [...counts.values()].map(({ verb, noun, count }) =>
+		`${verb} ${count} ${count === 1 ? noun : noun === "directory" ? "directories" : noun === "search" ? "searches" : `${noun}s`}`,
+	).join(", ");
+	return `${summary.charAt(0).toUpperCase()}${summary.slice(1)}${failed ? ` · ${failed} failed` : ""}`;
+}
+
+export const EXPLORATION_BUILT_INS = new Set(["read", "grep", "find", "ls"]);
 
 export const PI_WEB_ACCESS_TOOLS = new Set(["web_search", "fetch_content", "get_search_content"]);
 export const SHELL_TOOL_NAMES = new Set(["bash", "hypa_shell"]);
@@ -167,10 +192,8 @@ const SHELL_CONTROL_WORDS = new Set(["do", "then", "else", "elif", "if", "while"
 const SHELL_BLOCK_WORDS = new Set(["done", "fi", "esac", "{", "}", "(", ")", ";;"]);
 const SHELL_WORD_LIST_KEYWORDS = new Set(["for", "select", "case"]);
 
-// Commands that unambiguously change state. They let a deterministic "mutating"
-// verdict beat a model-written `intentKind: "explore"`. Ambiguous tools whose
-// subcommands may be read-only (npm, docker, kubectl, gh, brew, terraform) are
-// deliberately absent so intent can still describe them.
+// Commands that unambiguously change state. Ambiguous tools whose
+// subcommands may be read-only remain unknown.
 const MUTATING_SHELL_COMMANDS = new Set([
 	"apt",
 	"apt-get",
@@ -353,12 +376,6 @@ export interface ExplorationToolDescriptor {
 }
 
 export type ToolPresentationKind = "exploration" | "mutation" | "command" | "remote" | "original";
-
-export interface BashDisplayIntent {
-	text: string;
-	group?: string;
-	groupText?: string;
-}
 
 export interface ExplorationGroupItem {
 	id: string;
@@ -815,8 +832,7 @@ export function isReadOnlyShellCommand(command: string): boolean {
 /**
  * `read-only` and `mutating` are deterministic verdicts that the model cannot
  * override. `unknown` covers commands this parser cannot decide — interpreters
- * (`python3 -c`), unrecognized binaries, unsupported syntax — and is the only
- * verdict where a model-written `intentKind` is consulted.
+ * (`python3 -c`), unrecognized binaries, unsupported syntax.
  */
 export type ShellCommandVerdict = "read-only" | "mutating" | "unknown";
 
@@ -891,20 +907,8 @@ function metadataText(tool: ExplorationToolDescriptor): string {
 		.join(" ");
 }
 
-/** Read the model-written intent kind, ignoring unknown values. */
-export function toolIntentKind(args: unknown): IntentKind | undefined {
-	if (!isRecord(args)) return undefined;
-	const value = args[INTENT_KIND_FIELD];
-	return typeof value === "string" && (INTENT_KINDS as readonly string[]).includes(value)
-		? (value as IntentKind)
-		: undefined;
-}
-
 export function isExplorationTool(tool: ExplorationToolDescriptor): boolean {
 	const name = tool.name.toLowerCase();
-	// The model may always downgrade a call out of the exploration group; it may
-	// never upgrade one that this module proved to be a mutation.
-	if (toolIntentKind(tool.args) === "modify") return false;
 	// A script may call any tool, and its long description matches retrieval
 	// and mutation verbs alike, so metadata classification would be noise.
 	if (name === CODEMODE_TOOL_NAME) return false;
@@ -914,7 +918,7 @@ export function isExplorationTool(tool: ExplorationToolDescriptor): boolean {
 		if (command === undefined) return false;
 		const verdict = classifyShellCommand(command);
 		if (verdict !== "unknown") return verdict === "read-only";
-		return toolIntentKind(tool.args) === "explore";
+		return false;
 	}
 	if (name === "agent") return stringArg(tool.args, ["subagent_type"])?.toLowerCase() === "explore";
 	if (name === "get_subagent_result") return true;
@@ -1091,34 +1095,6 @@ export function formatMutationStatistics(tool: ExplorationToolDescriptor, detail
 	return statistics ? `+${statistics.added} -${statistics.removed} lines` : undefined;
 }
 
-export function bashDisplayIntent(tool: ExplorationToolDescriptor): BashDisplayIntent | undefined {
-	if (!SHELL_TOOL_NAMES.has(tool.name.toLowerCase())) return undefined;
-	const text = stringArg(tool.args, [INTENT_TEXT_FIELD]);
-	if (!text) return undefined;
-	const group = stringArg(tool.args, [INTENT_GROUP_FIELD]);
-	const groupText = stringArg(tool.args, [INTENT_GROUP_TEXT_FIELD]);
-	return { text, ...(group ? { group } : {}), ...(groupText ? { groupText } : {}) };
-}
-
-/**
- * Intent of a codemode script: its first `//` comment, when that comment is the
- * first meaningful line. Blank lines and the `// @options:` line are skipped.
- */
-export function codemodeDisplayIntent(tool: ExplorationToolDescriptor): string | undefined {
-	if (tool.name.toLowerCase() !== CODEMODE_TOOL_NAME) return undefined;
-	const code = isRecord(tool.args) && typeof tool.args.code === "string" ? tool.args.code : undefined;
-	if (code === undefined) return undefined;
-	for (const line of code.split(/\r\n|\r|\n/)) {
-		const trimmed = line.trim();
-		if (!trimmed || /^\/\/\s*@options:/.test(trimmed)) continue;
-		const comment = /^\/\/+(.*)$/.exec(trimmed);
-		if (!comment) return undefined;
-		const text = cleanDisplayText(comment[1] ?? "");
-		if (text) return text;
-	}
-	return undefined;
-}
-
 export function formatCommandSummary(tool: ExplorationToolDescriptor, maxCommandCharacters?: number): string {
 	if (tool.name.toLowerCase() === CODEMODE_TOOL_NAME) return CODEMODE_TOOL_NAME;
 	const command = stringArg(tool.args, ["command"]) ?? "…";
@@ -1128,16 +1104,6 @@ export function formatCommandSummary(tool: ExplorationToolDescriptor, maxCommand
 		? `${characters.slice(0, maxCommandCharacters).join("")}…`
 		: command;
 	return `$ ${truncated}`;
-}
-
-export function formatIntentCommandSummary(
-	tool: ExplorationToolDescriptor,
-	maxCommandCharacters?: number,
-): string | undefined {
-	const scriptIntent = codemodeDisplayIntent(tool);
-	if (scriptIntent) return scriptIntent;
-	const intent = bashDisplayIntent(tool);
-	return intent ? `${intent.text} · ${formatCommandSummary(tool, maxCommandCharacters)}` : undefined;
 }
 
 export function formatRemoteActionSummary(tool: ExplorationToolDescriptor): string {
@@ -1160,7 +1126,7 @@ export function formatExplorationSummary(tool: ExplorationToolDescriptor): strin
 	}
 	if (name === "ls") return `List ${stringArg(tool.args, ["path", "directory"]) ?? "."}`;
 	if (SHELL_TOOL_NAMES.has(name)) {
-		return formatIntentCommandSummary(tool, INTENT_COMMAND_CHARACTER_LIMIT) ?? formatCommandSummary(tool);
+		return formatCommandSummary(tool);
 	}
 	if (name === "mcp") return formatMcp(tool.args);
 	if (name === "web_search") return formatWebSearch(tool.args);

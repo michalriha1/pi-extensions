@@ -5,27 +5,36 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Container, truncateToWidth } from "@earendil-works/pi-tui";
+import { type TuiMouseEvent, type TuiMouseEventResult, Container, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
-	bashDisplayIntent,
 	CODEMODE_TOOL_NAME,
 	classifyToolPresentation,
 	type ExplorationGroupItem,
 	type ExplorationToolDescriptor,
 	formatCommandSummary,
+	formatCompletedSummary,
 	formatExplorationSummary,
-	formatIntentCommandSummary,
 	formatMutationStatistics,
 	formatMutationTarget,
 	formatRemoteActionSummary,
 	generateSelectionLabels,
-	INTENT_COMMAND_CHARACTER_LIMIT,
 	groupExplorationItems,
 	isExplorationTool,
 } from "./logic.ts";
 
 const PATCH_KEY = Symbol.for("pi.tool-display.patch.v9");
+// TEMPORARY: retain the non-intent pending renderers below for re-enabling later.
+export const HIDE_PENDING_CALLS = true;
+
 const ACTIVE_THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
+
+/** Private Pi 1.2 fullscreen router surface, feature-detected before hooking. */
+interface RuntimeMouseUI {
+	terminal?: { columns: number; rows: number };
+	getPrimaryScrollView?: () => { scrollTop: number };
+	createMouseEvent: (type: TuiMouseEvent["type"], button: number, x: number, y: number, extra?: Partial<TuiMouseEvent>) => TuiMouseEvent;
+	requestRender: (force?: boolean) => void;
+}
 
 interface RuntimeToolDefinition {
 	label?: unknown;
@@ -75,10 +84,10 @@ interface DescriptorCacheEntry {
 }
 
 interface RuntimeGroup {
-	kind: "exploration" | "mutation" | "command-intent" | "remote";
+	kind: "exploration" | "mutation" | "remote" | "completed";
 	members: GroupMember[];
 	stable: boolean;
-	heading?: string;
+	activeSection?: string;
 }
 
 interface RuntimeMembership {
@@ -108,6 +117,8 @@ interface PatchGlobal {
 	[PATCH_KEY]?: PatchRecord;
 }
 
+type MouseMethod = (this: object, event: TuiMouseEvent) => TuiMouseEventResult | undefined;
+
 type RenderMethod = (this: object, width: number) => string[];
 type UpdateArgsMethod = (this: object, args: unknown) => void;
 type UpdateResultMethod = (this: object, result: RuntimeToolResult, isPartial?: boolean) => void;
@@ -119,6 +130,8 @@ type RemoveChildMethod = (this: Container, component: object) => void;
 type ClearMethod = (this: Container) => void;
 
 interface PatchOptions {
+	/** Temporary opt-out for exercising retained pending rendering. */
+	hidePending?: boolean;
 	getTheme: () => Theme | undefined;
 	toolClass?: typeof ToolExecutionComponent;
 	assistantClass?: typeof AssistantMessageComponent;
@@ -177,14 +190,6 @@ function hasVisibleAssistantText(component: object): boolean {
 	);
 }
 
-function hasAssistantBoundaryContent(component: object): boolean {
-	const assistant = component as RuntimeAssistantMessage;
-	if (hasVisibleAssistantText(component)) return true;
-	if (typeof assistant.updateContent !== "function" || !isRecord(assistant.lastMessage)) return false;
-	const content = assistant.lastMessage.content;
-	return Array.isArray(content) && content.some((item) => isRecord(item) && item.type === "toolCall");
-}
-
 function withoutThinking(message: AssistantMessage): AssistantMessage {
 	return { ...message, content: message.content.filter((item) => item.type !== "thinking") };
 }
@@ -216,7 +221,7 @@ function compactTextOutput(
 }
 
 type SemanticState = "pending" | "success" | "failure";
-type StatusColor = "accent" | "success" | "error";
+type StatusColor = "accent" | "success" | "error" | "muted";
 
 function semanticState(runtime: RuntimeToolExecution): SemanticState {
 	if (runtime.result?.isError === true) return "failure";
@@ -251,8 +256,66 @@ function widthSafeLines(lines: string[], width: number): string[] {
 }
 
 class GroupingRuntime {
+	private hovered?: { component: object; group: RuntimeGroup; key: string; left: number; right: number; row: number };
+	private uiCleanup = new Map<object, () => void>();
+
+	clearHover(): boolean {
+		if (!this.hovered) return false;
+		this.groupRowsCache.delete(this.hovered.group);
+		this.hovered = undefined;
+		return true;
+	}
+
+	/** Pi routes only to the hit child, with no leave event. Observe normalized events
+	 * at the owning fullscreen router, including blank space/overlays; never raw input.
+	 * Instance hooks are restored on reset/reload, not global input listeners.
+	 */
+	private observeUI(component: object): void {
+		const ui = (component as { ui?: RuntimeMouseUI }).ui;
+		if (!ui || this.uiCleanup.has(ui) || typeof ui.createMouseEvent !== "function" || typeof ui.requestRender !== "function") return;
+		const runtime = this;
+		const ownMouse = Object.getOwnPropertyDescriptor(ui, "createMouseEvent");
+		const ownRender = Object.getOwnPropertyDescriptor(ui, "requestRender");
+		const mouse = ui.createMouseEvent;
+		const render = ui.requestRender;
+		const geometry = () => `${ui.terminal?.columns}:${ui.terminal?.rows}:${ui.getPrimaryScrollView?.().scrollTop}`;
+		let previous = geometry();
+		const wrappedMouse = function (this: RuntimeMouseUI, ...args: Parameters<RuntimeMouseUI["createMouseEvent"]>) {
+			const event = mouse.apply(this, args);
+			if (runtime.leaveForEvent(event)) render.call(this);
+			return event;
+		};
+		const wrappedRender = function (this: RuntimeMouseUI, ...args: Parameters<RuntimeMouseUI["requestRender"]>) {
+			const next = geometry();
+			if (next !== previous) runtime.clearHover();
+			previous = next;
+			return render.apply(this, args);
+		};
+		ui.createMouseEvent = wrappedMouse;
+		ui.requestRender = wrappedRender;
+		this.uiCleanup.set(ui, () => {
+			if (ui.createMouseEvent === wrappedMouse) {
+				if (ownMouse) Object.defineProperty(ui, "createMouseEvent", ownMouse); else Reflect.deleteProperty(ui, "createMouseEvent");
+			}
+			if (ui.requestRender === wrappedRender) {
+				if (ownRender) Object.defineProperty(ui, "requestRender", ownRender); else Reflect.deleteProperty(ui, "requestRender");
+			}
+		});
+	}
+
+	leaveForEvent(event: TuiMouseEvent): boolean {
+		const hover = this.hovered;
+		if (!hover) return false;
+		if (event.type !== "move" || event.screenY !== hover.row || event.screenX < hover.left || event.screenX >= hover.right) return this.clearHover();
+		return false;
+	}
+
+	private opened = new WeakSet<object>();
+	private mouseRows = new WeakMap<object, { width: number; height: number; group?: RuntimeGroup; native: boolean }>();
 	private parentStates = new Map<object, ParentState>();
 	private memberships = new WeakMap<object, RuntimeMembership>();
+	// Separate from kind-specific pending groups: one completed summary per visible-message interval.
+	private sequences = new WeakMap<object, RuntimeGroup>();
 	private componentParents = new WeakMap<object, object>();
 	private descriptorCache = new WeakMap<object, DescriptorCacheEntry>();
 	private normalizedOutputCache = new WeakMap<RuntimeToolResult, Map<number, string[]>>();
@@ -273,6 +336,7 @@ class GroupingRuntime {
 
 	constructor(
 		getTheme: () => Theme | undefined,
+		private readonly hidePending: boolean,
 		updateAssistantContent: UpdateAssistantContentMethod,
 		userClass: typeof UserMessageComponent,
 		onParentRebuild?: (parent: object) => void,
@@ -288,9 +352,15 @@ class GroupingRuntime {
 	}
 
 	reset(): void {
+		this.clearHover();
+		for (const cleanup of this.uiCleanup.values()) cleanup();
+		this.uiCleanup.clear();
 		this.restoreAllAssistantContent();
+		this.opened = new WeakSet();
+		this.mouseRows = new WeakMap();
 		this.parentStates.clear();
 		this.memberships = new WeakMap();
+		this.sequences = new WeakMap();
 		this.componentParents = new WeakMap();
 		this.descriptorCache = new WeakMap();
 		this.normalizedOutputCache = new WeakMap();
@@ -308,7 +378,7 @@ class GroupingRuntime {
 		for (const state of this.parentStates.values()) {
 			for (const component of state.components) {
 				const runtime = component as RuntimeToolExecution;
-				if (this.descriptor(component) && runtime.expanded !== true && !targets.includes(component)) targets.push(component);
+				if ((!this.hidePending || this.isComplete(component)) && this.descriptor(component) && runtime.expanded !== true && !targets.includes(component)) targets.push(component);
 			}
 		}
 		const labels = generateSelectionLabels(targets.length);
@@ -331,6 +401,7 @@ class GroupingRuntime {
 		if (!target) return false;
 		const setExpanded = (target as RuntimeToolExecution).setExpanded;
 		if (typeof setExpanded !== "function") return false;
+		this.opened.delete(target);
 		setExpanded.call(target, true);
 		return true;
 	}
@@ -348,8 +419,10 @@ class GroupingRuntime {
 		for (const component of state.components) {
 			if (components.includes(component)) continue;
 			this.restoreAssistantContent(component);
+			this.opened.delete(component);
 			this.invalidateRows(component);
 			this.memberships.delete(component);
+			this.sequences.delete(component);
 			if (this.componentParents.get(component) === parent) this.componentParents.delete(component);
 		}
 		state.components = [...components];
@@ -383,9 +456,11 @@ class GroupingRuntime {
 		const state = this.parentStates.get(parent);
 		if (!state || !state.components.includes(component)) return;
 		this.restoreAssistantContent(component);
+		this.opened.delete(component);
 		this.invalidateRows(component);
 		this.memberships.delete(component);
 		this.descriptorCache.delete(component);
+		this.sequences.delete(component);
 		const result = (component as RuntimeToolExecution).result;
 		if (result) this.normalizedOutputCache.delete(result);
 		this.selectionLabels.delete(component);
@@ -399,9 +474,11 @@ class GroupingRuntime {
 		if (!state) return;
 		for (const component of state.components) {
 			this.restoreAssistantContent(component);
+			this.opened.delete(component);
 			this.invalidateRows(component);
 			this.memberships.delete(component);
 			this.descriptorCache.delete(component);
+			this.sequences.delete(component);
 			const result = (component as RuntimeToolExecution).result;
 			if (result) this.normalizedOutputCache.delete(result);
 			this.selectionLabels.delete(component);
@@ -447,7 +524,10 @@ class GroupingRuntime {
 		this.descriptorCache.delete(component);
 		this.invalidateRows(component);
 		const parent = this.componentParents.get(component);
-		if (!parent) return;
+		if (!parent) {
+			this.sequences.delete(component);
+			return;
+		}
 		const state = this.parentStates.get(parent);
 		if (state) this.rebuildParent(parent, state);
 	}
@@ -458,14 +538,100 @@ class GroupingRuntime {
 		if (membership) membership.group.stable = this.isSettled(membership.group.members);
 	}
 
+	keyboardExpansionChanged(component: object): void {
+		this.opened.delete(component);
+		this.invalidateRows(component);
+	}
+
 	expansionChanged(component: object): void {
 		this.invalidateRows(component);
 	}
 
-	render(component: object, width: number, originalRender: RenderMethod): string[] {
+	handleMouse(component: object, event: TuiMouseEvent, original: MouseMethod): TuiMouseEventResult | undefined {
+		const layout = this.mouseRows.get(component);
+		if (!layout || layout.width !== event.width || event.y < 0 || event.y >= layout.height || event.x < 0 || event.x >= event.width) return undefined;
+		if (layout.native) return original.call(component, event);
+		const group = layout.group;
+		if (!group || !(event.type === "move" && event.button === "none" || event.type === "click" && event.button === "left")) return undefined;
+		const members = group.members.filter(({ component }) => this.isComplete(component) && ((component as RuntimeToolExecution).expanded !== true || this.opened.has(component)));
+		const sections = this.summarySections(members);
+		const leader = members.find(({ component }) => (component as RuntimeToolExecution).expanded !== true || this.opened.has(component));
+		let section: string | undefined;
+		if (leader?.component === component && event.y === 1) {
+			let x = visibleWidth("• ");
+			const labels = members.map(({ component }) => this.selectionPrefix(component).trim()).filter(Boolean).join(" ");
+			const full = "• " + sections.map(s => s.text).join("") + (labels ? ` ${labels}` : "");
+			const end = visibleWidth(full) > event.width ? Math.max(0, event.width - visibleWidth("…")) : visibleWidth(full);
+			for (const item of sections) {
+				const start = x + visibleWidth(item.separator);
+				x += visibleWidth(item.text);
+				if (event.x >= start && event.x < Math.min(x, end)) {
+					section = item.key;
+					if (event.type === "move") {
+						if (this.hovered?.group === group && this.hovered.key === section) return undefined;
+						this.clearHover();
+						this.hovered = { component, group, key: section, left: event.screenX - event.x + start, right: event.screenX - event.x + Math.min(x, end), row: event.screenY };
+						this.groupRowsCache.delete(group);
+						return { handled: true, render: true };
+					}
+				}
+			}
+			if (!section) return undefined;
+		} else if (!this.opened.has(component)) return undefined;
+		if (event.type === "move") return undefined;
+		const active = section && section !== group.activeSection ? section : undefined;
+		group.activeSection = active;
+		for (const { component: member, descriptor } of members) {
+			if (active && (active === "failed" ? (member as RuntimeToolExecution).result?.isError === true : this.category(descriptor) === active)) this.opened.add(member);
+			else this.opened.delete(member);
+			this.invalidateRows(member);
+		}
+		// Pi's dispatcher schedules the render; no raw input interception or focus change.
+		return { handled: true, render: true };
+	}
+
+	render(component: object, width: number, originalRender: RenderMethod, setExpanded: SetExpandedMethod): string[] {
+		this.observeUI(component);
+		if (this.hovered?.component === component && this.mouseRows.get(component)?.width !== width) this.clearHover();
+		const rows = this.renderRows(component, width, originalRender, setExpanded);
+		const sequence = this.sequences.get(component);
+		const members = sequence?.members.filter(({ component }) => this.isComplete(component) &&
+			((component as RuntimeToolExecution).expanded !== true || this.opened.has(component)));
+		const grouped = this.isComplete(component) && ((component as RuntimeToolExecution).expanded !== true || this.opened.has(component));
+		this.mouseRows.set(component, {
+			width, height: rows.length,
+			group: grouped && (members?.[0]?.component === component || this.opened.has(component)) ? sequence : undefined,
+			native: !grouped && (component as RuntimeToolExecution).expanded === true,
+		});
+		return rows;
+	}
+
+	private renderRows(component: object, width: number, originalRender: RenderMethod, setExpanded: SetExpandedMethod): string[] {
 		const runtime = component as RuntimeToolExecution;
-		if (runtime.expanded === true) return originalRender.call(component, width);
+		if (this.hidePending && !this.isComplete(component)) return [];
+		if (runtime.expanded === true && !this.opened.has(component)) return originalRender.call(component, width);
 		const theme = this.currentTheme();
+		if (this.isComplete(component)) {
+			const sequence = this.sequences.get(component);
+			if (sequence) {
+				const header = this.renderGroupMember(component, sequence, width, theme);
+				if (!this.opened.has(component)) return header;
+				// Mouse detail uses the original collapsed renderer; keyboard expansion stays independent.
+				const expanded = runtime.expanded === true;
+				try {
+					if (expanded) setExpanded.call(component, false);
+					return [...header, ...originalRender.call(component, width)];
+				} finally {
+					if (expanded) setExpanded.call(component, true);
+				}
+			}
+			const descriptor = this.descriptor(component);
+			if (descriptor) {
+				const group: RuntimeGroup = { kind: "completed", members: [{ component, descriptor, summary: "" }], stable: true };
+				this.sequences.set(component, group);
+				return this.renderGroupMember(component, group, width, theme);
+			}
+		}
 		const membership = this.memberships.get(component);
 		if (membership) return this.renderGroupMember(component, membership.group, width, theme);
 
@@ -513,10 +679,55 @@ class GroupingRuntime {
 		return rows.get(component) ?? [];
 	}
 
+	private category(descriptor: ExplorationToolDescriptor): string {
+		return formatCompletedSummary([descriptor]).toLowerCase();
+	}
+
+	private summarySections(members: GroupMember[]): Array<{ key: string; text: string; separator: string }> {
+		const buckets = new Map<string, ExplorationToolDescriptor[]>();
+		for (const { descriptor } of members) {
+			const key = this.category(descriptor);
+			const bucket = buckets.get(key) ?? [];
+			bucket.push(descriptor);
+			buckets.set(key, bucket);
+		}
+		const sections = [...buckets].map(([key, descriptors], index) => {
+			const separator = index ? ", " : "";
+			const summary = formatCompletedSummary(descriptors);
+			return { key, separator, text: separator + (index ? summary.toLowerCase() : summary) };
+		});
+		const failed = members.filter(({ component }) => (component as RuntimeToolExecution).result?.isError === true).length;
+		if (failed) sections.push({ key: "failed", separator: " · ", text: ` · ${failed} failed` });
+		return sections;
+	}
+
 	private computeGroupRows(group: RuntimeGroup, width: number, theme: Theme | undefined): Map<object, string[]> {
 		this.onCustomRowsCompute?.(group);
 		const rows = new Map<object, string[]>(group.members.map((member) => [member.component, []]));
-		if (group.kind === "exploration" || group.kind === "command-intent") {
+		if (group.kind === "completed") {
+			const members = group.members.filter(({ component }) => this.isComplete(component) && ((component as RuntimeToolExecution).expanded !== true || this.opened.has(component)));
+			const leader = members[0];
+			if (leader) {
+				const labels = members.map(({ component }) => this.selectionPrefix(component).trim()).filter(Boolean).join(" ");
+				const sections = this.summarySections(members);
+				const highlight = (section: { key: string; separator: string; text: string }) => {
+					const text = section.text.slice(section.separator.length);
+					if (!theme || this.hovered?.group !== group || this.hovered.key !== section.key) return section.text;
+					// fg() resets to terminal default, not the surrounding summary color.
+					const baseColor = section.key === "failed" ? "error" : "muted";
+					return section.separator + theme.fg("text", text) + theme.getFgAnsi(baseColor);
+				};
+				const regular = sections.filter(section => section.key !== "failed").map(highlight).join("");
+				const failure = sections.filter(section => section.key === "failed").map(highlight).join("");
+				const header = "• " + (theme ? theme.fg("muted", theme.bold(regular)) : regular)
+					+ (theme && failure ? theme.fg("error", theme.bold(failure)) : failure);
+				rows.set(leader.component, widthSafeLines([header + (labels ? ` ${labels}` : "")], width));
+			}
+			return rows;
+		}
+		// Keep the existing compact renderer for the pending subset only.
+		group = { ...group, members: group.members.filter(({ component }) => !this.isComplete(component)) };
+		if (group.kind === "exploration") {
 			let start = 0;
 			while (start < group.members.length) {
 				while ((group.members[start]?.component as RuntimeToolExecution | undefined)?.expanded === true) start += 1;
@@ -528,9 +739,7 @@ class GroupingRuntime {
 				if (leader) {
 					rows.set(
 						leader.component,
-						group.kind === "exploration"
-							? this.renderExplorationGroup(members, width, theme)
-							: this.renderIntentCommandGroup(members, group.heading ?? "…", width, theme),
+						this.renderExplorationGroup(members, width, theme),
 					);
 				}
 				start = end + 1;
@@ -581,27 +790,6 @@ class GroupingRuntime {
 			const branch = index === members.length - 1 ? "└" : "├";
 			const selection = this.selectionPrefix(member.component);
 			const text = `  ${branch} ${selection}${member.summary}`;
-			lines.push(theme ? theme.fg("muted", text) : text);
-		}
-		return widthSafeLines(lines, width);
-	}
-
-	private renderIntentCommandGroup(
-		members: GroupMember[],
-		heading: string,
-		width: number,
-		theme: Theme | undefined,
-	): string[] {
-		const failed = members.some((member) => semanticState(member.component as RuntimeToolExecution) === "failure");
-		const pending = members.some((member) => semanticState(member.component as RuntimeToolExecution) === "pending");
-		const status = failed ? "Failed" : pending ? "Running" : "Ran";
-		const color: StatusColor = failed ? "error" : pending ? "accent" : "success";
-		const lines = [statusHeader(theme, status, `— ${heading}`, color)];
-		for (let index = 0; index < members.length; index += 1) {
-			const member = members[index];
-			if (!member) continue;
-			const branch = index === members.length - 1 ? "└" : "├";
-			const text = `  ${branch} ${this.selectionPrefix(member.component)}${member.summary}`;
 			lines.push(theme ? theme.fg("muted", text) : text);
 		}
 		return widthSafeLines(lines, width);
@@ -730,7 +918,6 @@ class GroupingRuntime {
 		theme: Theme | undefined,
 	): string[] {
 		const state = semanticState(runtime);
-		const intentSummary = formatIntentCommandSummary(descriptor, INTENT_COMMAND_CHARACTER_LIMIT);
 		// Script output starts with a wall-time header and is meant for the model;
 		// the expanded view (pi's own renderer) shows it in full.
 		const script = descriptor.name.toLowerCase() === CODEMODE_TOOL_NAME;
@@ -739,15 +926,13 @@ class GroupingRuntime {
 				? "Running"
 				: state === "success"
 					? "Ran"
-					: intentSummary
-						? "Failed"
-						: script
+					: script
 							? "Script failed"
 							: "Command failed";
 		const color: StatusColor = state === "pending" ? "accent" : state === "success" ? "success" : "error";
-		const summary = intentSummary ? `— ${intentSummary}` : formatCommandSummary(descriptor);
+		const summary = formatCommandSummary(descriptor);
 		const lines = [statusHeader(theme, status, summary, color, this.selectionLabels.get(component))];
-		if (!intentSummary && !script) {
+		if (!script) {
 			for (const output of this.normalizedOutput(runtime, 3)) {
 				lines.push(detailLine(theme, output, state === "failure"));
 			}
@@ -789,6 +974,10 @@ class GroupingRuntime {
 	}
 
 	private invalidateRows(component: object): void {
+		if (this.hovered?.group === this.sequences.get(component)) this.clearHover();
+		this.mouseRows.delete(component);
+		const sequence = this.sequences.get(component);
+		if (sequence) this.groupRowsCache.delete(sequence);
 		const membership = this.memberships.get(component);
 		if (membership) this.groupRowsCache.delete(membership.group);
 		this.componentRowsCache.delete(component);
@@ -849,6 +1038,11 @@ class GroupingRuntime {
 		return labeled;
 	}
 
+	private isComplete(component: object): boolean {
+		const runtime = component as RuntimeToolExecution;
+		return runtime.isPartial === false && runtime.result !== undefined;
+	}
+
 	private isSettled(members: GroupMember[]): boolean {
 		return members.every((member) => {
 			const runtime = member.component as RuntimeToolExecution;
@@ -857,7 +1051,27 @@ class GroupingRuntime {
 	}
 
 	private rebuildParent(parent: object, state: ParentState): void {
-		for (const component of state.components) this.memberships.delete(component);
+		this.clearHover();
+		for (const component of state.components) {
+			this.mouseRows.delete(component);
+			this.opened.delete(component);
+		}
+		for (const component of state.components) {
+			this.memberships.delete(component);
+			this.sequences.delete(component);
+		}
+		let sequence: RuntimeGroup | undefined;
+		for (const component of state.components) {
+			const descriptor = this.descriptor(component);
+			if (descriptor) {
+				// Only completed members contribute rows. Mutators invalidate this cache even while siblings run.
+				sequence ??= { kind: "completed", members: [], stable: true };
+				sequence.members.push({ component, descriptor, summary: "" });
+				this.sequences.set(component, sequence);
+			} else if (component instanceof this.userClass || hasVisibleAssistantText(component)) {
+				sequence = undefined;
+			}
+		}
 		this.addMemberships(state);
 		this.onParentRebuild?.(parent);
 	}
@@ -927,61 +1141,11 @@ class GroupingRuntime {
 			const descriptor = this.descriptor(component);
 			if (descriptor && classifyToolPresentation(descriptor) === "mutation") {
 				mutationMembers.push({ component, descriptor, summary: formatMutationTarget(descriptor) });
-			} else if (descriptor || hasVisibleAssistantText(component)) {
+			} else if (descriptor || component instanceof this.userClass || hasVisibleAssistantText(component)) {
 				addMutationGroup();
 			}
 		}
 		addMutationGroup();
-
-		let intentCommandMembers: GroupMember[] = [];
-		let intentCommandGroup: string | undefined;
-		let intentCommandHeading: string | undefined;
-		const addIntentCommandGroup = () => {
-			if (intentCommandMembers.length >= 2 && intentCommandHeading) {
-				const group: RuntimeGroup = {
-					kind: "command-intent",
-					members: intentCommandMembers,
-					stable: this.isSettled(intentCommandMembers),
-					heading: intentCommandHeading,
-				};
-				for (let index = 0; index < intentCommandMembers.length; index += 1) {
-					const member = intentCommandMembers[index];
-					if (member) this.memberships.set(member.component, { group, index });
-				}
-			}
-			intentCommandMembers = [];
-			intentCommandGroup = undefined;
-			intentCommandHeading = undefined;
-		};
-		for (const component of state.components) {
-			const descriptor = this.descriptor(component);
-			const intent = descriptor ? bashDisplayIntent(descriptor) : undefined;
-			const eligible =
-				descriptor &&
-				classifyToolPresentation(descriptor) === "command" &&
-				intent?.group &&
-				intent.groupText;
-			if (eligible && intent) {
-				if (
-					intentCommandMembers.length > 0 &&
-					(intent.group !== intentCommandGroup || intent.groupText !== intentCommandHeading)
-				) {
-					addIntentCommandGroup();
-				}
-				intentCommandGroup = intent.group;
-				intentCommandHeading = intent.groupText;
-				intentCommandMembers.push({
-					component,
-					descriptor,
-					summary:
-						formatIntentCommandSummary(descriptor, INTENT_COMMAND_CHARACTER_LIMIT) ??
-						formatCommandSummary(descriptor, INTENT_COMMAND_CHARACTER_LIMIT),
-				});
-			} else if (descriptor || hasVisibleAssistantText(component)) {
-				addIntentCommandGroup();
-			}
-		}
-		addIntentCommandGroup();
 
 		let remoteMembers: GroupMember[] = [];
 		const addRemoteGroup = () => {
@@ -998,7 +1162,7 @@ class GroupingRuntime {
 			const descriptor = this.descriptor(component);
 			if (descriptor && classifyToolPresentation(descriptor) === "remote") {
 				remoteMembers.push({ component, descriptor, summary: formatRemoteActionSummary(descriptor) });
-			} else if (descriptor || hasAssistantBoundaryContent(component)) {
+			} else if (descriptor || component instanceof this.userClass || hasVisibleAssistantText(component)) {
 				addRemoteGroup();
 			}
 		}
@@ -1019,17 +1183,22 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	const assistantPrototype = assistantClass.prototype as unknown as Record<string, unknown>;
 	const containerPrototype = containerClass.prototype as unknown as Record<string, unknown>;
 	const originalRender = toolPrototype.render;
+	const originalMouse = toolPrototype.handleMouse;
+	const originalInvalidate = toolPrototype.invalidate;
 	const originalUpdateArgs = toolPrototype.updateArgs;
 	const originalUpdateResult = toolPrototype.updateResult;
 	const originalSetExpanded = toolPrototype.setExpanded;
 	const originalUpdateAssistantContent = assistantPrototype.updateContent;
 	const originalContainerRender = containerPrototype.render;
+	const originalContainerMouse = containerPrototype.handleMouse;
 	const originalAddChild = containerPrototype.addChild;
 	const originalRemoveChild = containerPrototype.removeChild;
 	const originalClear = containerPrototype.clear;
 
 	if (
 		typeof originalRender !== "function" ||
+		typeof originalMouse !== "function" ||
+		typeof originalInvalidate !== "function" ||
 		typeof originalUpdateArgs !== "function" ||
 		typeof originalUpdateResult !== "function" ||
 		typeof originalSetExpanded !== "function" ||
@@ -1061,6 +1230,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	const clear = originalClear as ClearMethod;
 	const runtime = new GroupingRuntime(
 		options.getTheme,
+		options.hidePending ?? HIDE_PENDING_CALLS,
 		updateAssistantContent,
 		userClass,
 		options.onParentRebuild,
@@ -1070,7 +1240,16 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	let restored = false;
 
 	const wrappedRender: RenderMethod = function (width) {
-		return runtime.render(this, width, render);
+		return runtime.render(this, width, render, setExpanded);
+	};
+	const wrappedInvalidate = function (this: object) {
+		(originalInvalidate as (this: object) => void).call(this);
+		runtime.expansionChanged(this);
+	};
+	const wrappedMouse: MouseMethod = function (event) {
+		const changed = runtime.leaveForEvent(event);
+		const result = runtime.handleMouse(this, event, originalMouse as MouseMethod);
+		return changed && event.type === "move" ? { ...result, handled: true, render: true } : result;
 	};
 	const wrappedUpdateArgs: UpdateArgsMethod = function (args) {
 		updateArgs.call(this, args);
@@ -1082,10 +1261,17 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	};
 	const wrappedSetExpanded: SetExpandedMethod = function (expanded) {
 		setExpanded.call(this, expanded);
-		runtime.expansionChanged(this);
+		runtime.keyboardExpansionChanged(this);
 	};
 	const wrappedUpdateAssistantContent: UpdateAssistantContentMethod = function (message) {
 		runtime.updateAssistant(this, message);
+	};
+	const wrappedContainerMouse: MouseMethod = function (event) {
+		const changed = runtime.leaveForEvent(event);
+		const result = (originalContainerMouse as MouseMethod).call(this, event);
+		// Only moves may be consumed to request a leave repaint. Preserve wheel/drag/click routing.
+		if (changed && event.type === "move") return { ...result, handled: true, render: true };
+		return result;
 	};
 	const wrappedContainerRender: ContainerRenderMethod = function (width) {
 		runtime.adopt(
@@ -1125,11 +1311,14 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 	};
 
 	toolPrototype.render = wrappedRender;
+	toolPrototype.handleMouse = wrappedMouse;
+	toolPrototype.invalidate = wrappedInvalidate;
 	toolPrototype.updateArgs = wrappedUpdateArgs;
 	toolPrototype.updateResult = wrappedUpdateResult;
 	toolPrototype.setExpanded = wrappedSetExpanded;
 	assistantPrototype.updateContent = wrappedUpdateAssistantContent;
 	containerPrototype.render = wrappedContainerRender;
+	containerPrototype.handleMouse = wrappedContainerMouse;
 	containerPrototype.addChild = wrappedAddChild;
 	containerPrototype.removeChild = wrappedRemoveChild;
 	containerPrototype.clear = wrappedClear;
@@ -1143,6 +1332,8 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 		restore: () => {
 			if (restored) return;
 			restored = true;
+			if (toolPrototype.invalidate === wrappedInvalidate) toolPrototype.invalidate = originalInvalidate;
+			if (toolPrototype.handleMouse === wrappedMouse) toolPrototype.handleMouse = originalMouse;
 			if (toolPrototype.render === wrappedRender) toolPrototype.render = render;
 			if (toolPrototype.updateArgs === wrappedUpdateArgs) toolPrototype.updateArgs = updateArgs;
 			if (toolPrototype.updateResult === wrappedUpdateResult) toolPrototype.updateResult = updateResult;
@@ -1150,6 +1341,7 @@ export function installToolCallGroupingPatch(options: PatchOptions): PatchHandle
 			if (assistantPrototype.updateContent === wrappedUpdateAssistantContent) {
 				assistantPrototype.updateContent = updateAssistantContent;
 			}
+			if (containerPrototype.handleMouse === wrappedContainerMouse) containerPrototype.handleMouse = originalContainerMouse;
 			if (containerPrototype.render === wrappedContainerRender) containerPrototype.render = containerRender;
 			if (containerPrototype.addChild === wrappedAddChild) containerPrototype.addChild = addChild;
 			if (containerPrototype.removeChild === wrappedRemoveChild) containerPrototype.removeChild = removeChild;

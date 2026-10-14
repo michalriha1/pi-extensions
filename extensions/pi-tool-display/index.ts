@@ -1,7 +1,5 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { CODEMODE_INTENT_PROMPT_GUIDELINE, INTENT_PROMPT_GUIDELINE, injectIntentSchemas } from "./intent.ts";
-import { CODEMODE_TOOL_NAME } from "./logic.ts";
 import { installToolCallGroupingPatch } from "./patch.ts";
 
 const ACTIVE_THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
@@ -14,10 +12,6 @@ export default function piToolDisplayExtension(pi: ExtensionAPI): void {
 	let currentTheme: Theme | undefined;
 	let patch: ReturnType<typeof installToolCallGroupingPatch> | undefined;
 	let cancelActiveSelection: (() => void) | undefined;
-
-	// Re-applied every turn: pi rebuilds tool definitions when tools are
-	// registered, reloaded, or re-activated, and injection is idempotent.
-	const applyIntentSchemas = (): boolean => injectIntentSchemas(pi.getAllTools());
 
 	const cancelSelection = () => {
 		cancelActiveSelection?.();
@@ -83,20 +77,8 @@ export default function piToolDisplayExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	// Intent costs tokens on every owned tool call, so it is only requested where
-	// the grouped renderer can actually show it.
-	pi.on("before_agent_start", (event, ctx) => {
-		if (ctx.mode !== "tui") return;
-		const guidelines: string[] = [];
-		if (applyIntentSchemas()) guidelines.push(INTENT_PROMPT_GUIDELINE);
-		if (pi.getActiveTools().includes(CODEMODE_TOOL_NAME)) guidelines.push(CODEMODE_INTENT_PROMPT_GUIDELINE);
-		if (guidelines.length === 0) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${guidelines.join("\n\n")}` };
-	});
-
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
-		applyIntentSchemas();
 		cancelSelection();
 		currentTheme = ctx.ui.theme;
 		patch = installToolCallGroupingPatch({ getTheme: () => currentTheme ?? getActiveTheme() });
@@ -113,6 +95,5 @@ export default function piToolDisplayExtension(pi: ExtensionAPI): void {
 	});
 }
 
-export * from "./intent.ts";
 export * from "./logic.ts";
 export { installToolCallGroupingPatch } from "./patch.ts";
